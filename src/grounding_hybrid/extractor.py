@@ -12,6 +12,10 @@ Per answer sentence (its tokens = answer tokens whose start offset lies inside i
                 mean attention over the answer so far (positions P..p, itself included).
   logprob_full  mean full-context token log-prob. Must match -mean_surprisal in GASP's
                 sentence.csv: this is the alignment check.
+
+Runs in float32 by default on every device. Eager attention (needed to read the weights)
+overflows in float16 for Qwen2.5: every feature came out NaN on a T4, while GASP's own fp16
+passes use SDPA and are unaffected.
 """
 import numpy as np
 import torch
@@ -27,14 +31,14 @@ def default_device():
 
 
 class SharedExtractor:
-    def __init__(self, model_id, device=None, max_ctx_tokens=1800, max_ans_tokens=256):
+    def __init__(self, model_id, device=None, dtype="float32", max_ctx_tokens=1800, max_ans_tokens=256):
         self.device = device or default_device()
-        dtype = torch.float16 if self.device.startswith("cuda") else torch.float32   # as GASP
+        self.dtype = dtype
         self.model_id = model_id
         self.max_ctx, self.max_ans = max_ctx_tokens, max_ans_tokens
         self.tok = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=dtype, attn_implementation="eager").to(self.device).eval()
+            model_id, torch_dtype=getattr(torch, dtype), attn_implementation="eager").to(self.device).eval()
         layers = self.model.model.layers
         self.n_layers, self.n_heads = len(layers), self.model.config.num_attention_heads
         self._P, self._lookback = None, None

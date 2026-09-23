@@ -37,6 +37,7 @@ def main():
     ap.add_argument("--config", default=str(ROOT / "configs" / "reproduce.yaml"))
     ap.add_argument("--max_cases", type=int, default=0, help="cap cases (0 = all); for quick tests")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--dtype", default="float32", help="float16 makes Qwen2.5 eager attention overflow")
     args = ap.parse_args()
 
     canon = Path(args.canon_dir)
@@ -58,10 +59,10 @@ def main():
     cases = load_cases(canon)
     if args.max_cases:
         cases = cases[: args.max_cases]
-    ex = SharedExtractor(args.model, device=args.device,
+    ex = SharedExtractor(args.model, device=args.device, dtype=args.dtype,
                          max_ctx_tokens=p["max_ctx_tokens"], max_ans_tokens=p["max_ans_tokens"])
     print(f"{tag}: {len(cases)} cases, {args.model} on {ex.device}, "
-          f"{ex.n_layers} layers x {ex.n_heads} heads", flush=True)
+          f"{ex.n_layers} layers x {ex.n_heads} heads, {ex.dtype}", flush=True)
 
     t0 = time.time()
     rows = []
@@ -89,12 +90,14 @@ def main():
     covered = sum(h is not None for h in hit)
     ntok_ok = all(h is None or h["n_tok"] == n for h, n in zip(hit, sent["n_tok"]))
     diff = np.array([abs(h["logprob_full"] + m) for h, m in zip(hit, sent["mean_surprisal"]) if h is not None])
+    nan_rows = sum(1 for r in rows if not np.isfinite(r["logprob_full"]) or not np.isfinite(r["lookback"]).all())
     check = dict(gasp_rows=len(sent), covered=covered, extra=len(rows) - covered, n_tok_match=ntok_ok,
+                 nan_rows=nan_rows,
                  logprob_absdiff_mean=float(diff.mean()) if diff.size else None,
                  logprob_absdiff_max=float(diff.max()) if diff.size else None)
     print("alignment vs GASP sentence.csv:", check, flush=True)
 
-    meta = dict(tag=tag, model=args.model, device=ex.device, n_cases=len(cases),
+    meta = dict(tag=tag, model=args.model, device=ex.device, dtype=ex.dtype, n_cases=len(cases),
                 n_sentences=len(rows), n_layers=ex.n_layers, n_heads=ex.n_heads,
                 features={"lookback": "A_ctx/(A_ctx+A_new) per layer x head, mean over sentence tokens",
                           "logprob_full": "mean full-context token log-prob (= -GASP mean_surprisal)"},
@@ -102,6 +105,8 @@ def main():
                 env=dict(python=platform.python_version(), torch=torch.__version__))
     json.dump(meta, open(out_dir / f"meta{suffix}.json", "w"), indent=1)
     print(f"saved {len(rows)} sentences to {out_file} in {minutes:.1f} min")
+    if nan_rows or covered < len(sent) or not ntok_ok:
+        sys.exit(f"alignment FAILED for {tag}: {check}")
 
 
 if __name__ == "__main__":
