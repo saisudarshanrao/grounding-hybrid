@@ -19,8 +19,10 @@ scripts/mac_smoke_test.py  runs GASP on one toy example; shows the known-answer 
 scripts/extract_features.py  shared single-pass features (Lookback Lens) for one GASP run
 scripts/eval_features.py   scores features under GASP's exact split/classifier/bootstrap
 scripts/run_features.py    all models x datasets, one GPU per model in parallel
+scripts/analyze_prior.py   dev-only check: GASP AUC by no-context prior (S2) bins
 kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks week 1 or week 2 runs
-src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks)
+src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
+                           signals.py (S1 signed sensitivity, S2 prior, S3 Lookback)
 ```
 
 `third_party/` and `results/` are not committed; scripts recreate them.

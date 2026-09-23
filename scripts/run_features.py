@@ -3,7 +3,8 @@
 Reads finished GASP runs (cases.jsonl + sentence.csv per TAG) from --canon_root, e.g. the
 Week 1 Kaggle output attached as notebook input, and writes <outroot>/<TAG>/features.npz,
 meta.json, eval.json and eval.txt. Each model runs in its own process pinned to its own GPU
-(both T4s busy); its datasets run in turn. Resumable: finished runs are skipped.
+(both T4s busy); its datasets run in turn. Worker output streams live, prefixed with the
+model name, and is also saved to <outroot>/logs/<model>.log. Resumable: finished runs are skipped.
 
 Usage:
     python scripts/run_features.py --canon_root /kaggle/input/<...>/canon_results \
@@ -14,6 +15,7 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +55,15 @@ def run_worker(model, args, cfg):
         print(r.stdout, flush=True)
 
 
+def _pump(proc, log_path, prefix):
+    """Copy a worker's output to its log file and, prefixed, to this process's stdout (live)."""
+    with open(log_path, "w") as log:
+        for line in proc.stdout:
+            log.write(line)
+            log.flush()
+            print(f"[{prefix}] {line}", end="", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--canon_root", required=True, help="folder holding the GASP run folders (TAGs)")
@@ -75,18 +86,22 @@ def main():
 
     t0, procs = time.time(), []
     for i, model in enumerate(models):
-        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % n_gpu)) if n_gpu else dict(os.environ)
+        env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % n_gpu), PYTHONUNBUFFERED="1") if n_gpu \
+            else dict(os.environ, PYTHONUNBUFFERED="1")
         cmd = [sys.executable, __file__, "--worker", model, "--canon_root", args.canon_root,
                "--outroot", args.outroot, "--config", args.config] + (["--smoke"] if args.smoke else [])
-        log = open(log_dir / f"{model.split('/')[-1]}.log", "w")
-        procs.append((model, log, subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)))
+        short = model.split("/")[-1]
+        p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        pump = threading.Thread(target=_pump, args=(p, log_dir / f"{short}.log", short))
+        pump.start()
+        procs.append((model, p, pump))
         if n_gpu <= 1:                      # one device: run the models one after another
-            procs[-1][2].wait()
-    for model, log, p in procs:
+            p.wait()
+            pump.join()
+    for model, p, pump in procs:
         p.wait()
-        log.close()
-        print(f"\n##### {model} (exit {p.returncode}) #####", flush=True)
-        print((log_dir / f"{model.split('/')[-1]}.log").read_text(), flush=True)
+        pump.join()
+        print(f"##### {model}: exit {p.returncode} #####", flush=True)
     print(f"All done in {(time.time() - t0) / 60:.1f} min.")
 
 
