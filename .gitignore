@@ -1,0 +1,16 @@
+# third-party code is fetched by scripts/setup_gasp.py, not committed
+third_party/*
+!third_party/.gitkeep
+
+# experiment outputs live on Kaggle / your Mac, not in git
+results/*
+!results/.gitkeep
+
+# python / environment
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+.ipynb_checkpoints/
+wandb/

@@ -1,0 +1,13 @@
+# Pinned to the versions GASP used, so the reproduction matches the paper.
+# torch is NOT listed: Kaggle already has a CUDA build. On the Mac, install it first: pip install torch
+transformers==4.44.2
+huggingface_hub==0.24.6
+datasets==2.21.0
+accelerate==0.34.2
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+scipy>=1.11
+matplotlib>=3.7
+sentencepiece
+pyyaml>=6.0

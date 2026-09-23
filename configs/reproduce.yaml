@@ -1,0 +1,45 @@
+# Week 1: reproduce the GASP baseline exactly as published.
+# Settings mirror GASP's pipeline/run_gasp.py defaults so our numbers are comparable.
+
+gasp:
+  repo: https://github.com/drbouke/GASP.git
+  commit: 5bd72c4e31d12837065daa29095a253611cc0f75   # pinned so results never drift
+  tofueval_repo: https://github.com/amazon-science/tofueval.git
+
+params:
+  k_chunks: 5
+  max_ctx_tokens: 1800
+  max_ans_tokens: 256
+  n_per_class: 300        # RAGTruth / RAGBench are class-balanced by sampling
+  seed: 42
+
+# Main scorers. Both have published RAGTruth numbers in GASP's results/RESULTS.md,
+# so we can check the reproduction against them directly.
+models:
+  - Qwen/Qwen2.5-1.5B-Instruct
+  - HuggingFaceTB/SmolLM2-1.7B-Instruct
+
+datasets:
+  - ragtruth
+  - ragbench
+  - tofueval
+
+# Published span-level ROC-AUC on RAGTruth (GASP results/RESULTS.md, same settings).
+# A reproduction within roughly +/-0.02 of these is a success.
+reference_ragtruth_span_auc:
+  Qwen/Qwen2.5-1.5B-Instruct:
+    perplexity: 0.602
+    gasp_threshold_gap: 0.717
+    gasp_trained: 0.724
+    gasp_plus_base: 0.741
+  HuggingFaceTB/SmolLM2-1.7B-Instruct:
+    perplexity: 0.597
+    gasp_threshold_gap: 0.717
+    gasp_trained: 0.723
+    gasp_plus_base: 0.744
+
+# Smoke-test mode: a tiny run to check the pipeline end to end before a full run.
+smoke:
+  model: Qwen/Qwen2.5-1.5B-Instruct
+  dataset: ragtruth
+  max_cases: 30
