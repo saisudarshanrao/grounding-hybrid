@@ -37,11 +37,13 @@ Final reported numbers always come from Kaggle runs; the Mac is for development 
 ## One-time Mac setup
 
 ```bash
-# Apple Silicon Python environment
-python3 -m venv .venv && source .venv/bin/activate
+# Apple Silicon Python environment (macOS's own python3 is 3.9, too old for current torch)
+brew install python@3.11
+/opt/homebrew/bin/python3.11 -m venv .venv
+echo 'export PYTORCH_ENABLE_MPS_FALLBACK=1' >> .venv/bin/activate   # set on every activate
+source .venv/bin/activate
 pip install torch
 pip install -r requirements.txt
-export PYTORCH_ENABLE_MPS_FALLBACK=1     # add to ~/.zshrc to make it permanent
 
 python scripts/env_check.py              # should say: Apple MPS available
 python scripts/setup_gasp.py             # fetch GASP + TofuEval
@@ -50,7 +52,7 @@ python scripts/mac_smoke_test.py         # toy example with Qwen2.5-0.5B
 
 ## Week 1 checklist
 
-- [ ] Mac: environment works, `mac_smoke_test.py` prints three sensitivity scores
+- [x] Mac: environment works, `mac_smoke_test.py` prints three sensitivity scores
 - [ ] Kaggle: `MODE = "smoke"` run completes
 - [ ] Kaggle: `MODE = "full"` run completes for both models on RAGTruth
 - [ ] RAGTruth span AUCs within about +/-0.02 of `reference_ragtruth_span_auc` in the config

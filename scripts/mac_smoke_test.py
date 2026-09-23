@@ -6,6 +6,8 @@ problem with your own eyes. The answer below has three kinds of sentence:
   B. grounded, and only knowable from the context -> GASP should score it HIGH
   C. unsupported by the context                  -> GASP should score it LOW (correct)
 If A and C get similar low scores, GASP cannot tell them apart. That is the gap we fix.
+The query asks for sentence A's fact directly, so the model can predict it without the
+context (as in short-answer QA). If the query does not elicit A, A scores high instead.
 
 Usage:
     python scripts/mac_smoke_test.py                       # Qwen2.5-0.5B, fast
@@ -27,7 +29,7 @@ CONTEXT = (
     "The institute studies light-sensitive polymers and employs 240 researchers. "
     "Its main building sits on the left bank of the Seine."
 )
-QUERY = "Tell me about the Lumen Institute."
+QUERY = "What is the capital of France, and what do you know about the Lumen Institute?"
 ANSWER = (
     "Paris is the capital of France. "                            # A: grounded + model knows it
     "The Lumen Institute was founded in 2011 by Adele Morand. "   # B: grounded, context-only
@@ -52,9 +54,9 @@ def main():
     det = GASP(args.model, k_chunks=4, device=device, dtype=dtype)
     result = det.detect(context=CONTEXT, answer=ANSWER, query=QUERY)
 
-    print(f"{'sensitivity':>11}  sentence")
+    print(f"{'sensitivity':>11} {'gap':>7}  sentence")
     for label, s in zip(LABELS, result):
-        print(f"{s.sensitivity:+11.3f}  [{label}] {s.text}")
+        print(f"{s.sensitivity:+11.3f} {s.features['gap']:+7.3f}  [{label}] {s.text}")
     print("\nHigher = depends more on the context (more likely grounded).")
     print("Watch sentence A: it is grounded, but may score low because the model already knows it.")
 
