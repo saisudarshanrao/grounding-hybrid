@@ -7,20 +7,27 @@ Kaggle notebook settings (right-hand panel):
     read-only access to this one repository). Never paste the token into the code.
     Without the secret the clone still works, but only while the repository is public.
 
-Set MODE below: "smoke" first (30 cases, a few minutes), then "full" once smoke succeeds.
-If the cell stops midway, run it again in the same session: finished parts are skipped.
-Results are written to /kaggle/working/results, which Kaggle keeps as the notebook output.
+MODE (set below):
+  "smoke" / "full"                 week 1: GASP reproduction (30 cases / everything)
+  "features-smoke" / "features"    week 2: shared-extractor features (Lookback Lens) + evaluation,
+                                   both models in parallel, one per T4. Needs the week 1 GASP output
+                                   attached as input: Add Input > Your Work > Notebooks > the GASP
+                                   notebook (its results/gasp_repro/canon_results is found automatically).
+Run the smoke variant first. If the cell stops midway, run it again in the same session:
+finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
+does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
 """
+import glob
 import os
 import shutil
 import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"          # "smoke" or "full"
+MODE = "smoke"          # "smoke", "full", "features-smoke" or "features"
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
-OUTROOT = "/kaggle/working/results/gasp_repro"  # results ARE saved as output
+OUTROOT = "/kaggle/working/results"            # results ARE saved as output
 
 
 def sh(cmd, cwd=None, secret=False):
@@ -57,7 +64,17 @@ sh("python scripts/env_check.py", cwd=REPO_DIR)
 sh("python scripts/setup_gasp.py", cwd=REPO_DIR)
 
 # 3. Run (resumable within the session)
-flag = "--smoke" if MODE == "smoke" else ""
-sh(f"python scripts/reproduce_gasp.py {flag} --outroot {OUTROOT}", cwd=REPO_DIR)
+flag = "--smoke" if MODE.endswith("smoke") else ""
+if MODE in ("smoke", "full"):
+    sh(f"python scripts/reproduce_gasp.py {flag} --outroot {OUTROOT}/gasp_repro", cwd=REPO_DIR)
+elif MODE in ("features-smoke", "features"):
+    found = [d for d in sorted(glob.glob("/kaggle/input/**/canon_results", recursive=True)) if "_smoke" not in d]
+    if not found:
+        raise RuntimeError("attach the week 1 GASP notebook output as input (see the notes at the top)")
+    print("GASP runs read from", found[0])
+    sh(f"python scripts/run_features.py {flag} --canon_root {found[0]} --outroot {OUTROOT}/features",
+       cwd=REPO_DIR)
+else:
+    raise ValueError(f"unknown MODE {MODE!r}")
 
 print("\nFinished. Download /kaggle/working/results from the notebook's Output tab.")

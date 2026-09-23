@@ -1,0 +1,108 @@
+"""Extract per-sentence features for one GASP run with the shared single-pass extractor.
+
+Reads GASP's canonical cases (cases.jsonl) from a finished GASP run and writes compact
+per-sentence features keyed by (case_id, sent_idx), the key of GASP's sentence.csv. Use the
+same model as that GASP run: which sentences get features depends on the tokenizer.
+Resumable: an existing output file is skipped.
+
+Usage:
+    python scripts/extract_features.py \
+        --canon_dir results/gasp_repro/canon_results/Qwen2.5-1.5B-Instruct_ragtruth_K5 \
+        --model Qwen/Qwen2.5-1.5B-Instruct
+    python scripts/extract_features.py ... --max_cases 3     # quick Mac test
+
+Output: <outroot>/<TAG>/features.npz (+ meta.json), where TAG is the GASP run's folder name.
+"""
+import argparse
+import json
+import platform
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from grounding_hybrid.gasp_bridge import load_cases, load_sentences  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--canon_dir", required=True, help="a GASP run folder with cases.jsonl + sentence.csv")
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--outroot", default=str(ROOT / "results" / "features"))
+    ap.add_argument("--config", default=str(ROOT / "configs" / "reproduce.yaml"))
+    ap.add_argument("--max_cases", type=int, default=0, help="cap cases (0 = all); for quick tests")
+    ap.add_argument("--device", default=None)
+    args = ap.parse_args()
+
+    canon = Path(args.canon_dir)
+    tag = canon.name
+    if not tag.startswith(args.model.split("/")[-1] + "_"):
+        sys.exit(f"{tag} was not scored by {args.model}: sentence rows would not align")
+    out_dir = Path(args.outroot) / tag
+    suffix = f"_first{args.max_cases}" if args.max_cases else ""
+    out_file = out_dir / f"features{suffix}.npz"
+    if out_file.exists():
+        print(f"[skip] {out_file} exists")
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    import torch
+    from grounding_hybrid.extractor import SharedExtractor
+
+    p = yaml.safe_load(open(args.config))["params"]
+    cases = load_cases(canon)
+    if args.max_cases:
+        cases = cases[: args.max_cases]
+    ex = SharedExtractor(args.model, device=args.device,
+                         max_ctx_tokens=p["max_ctx_tokens"], max_ans_tokens=p["max_ans_tokens"])
+    print(f"{tag}: {len(cases)} cases, {args.model} on {ex.device}, "
+          f"{ex.n_layers} layers x {ex.n_heads} heads", flush=True)
+
+    t0 = time.time()
+    rows = []
+    for i, case in enumerate(cases):
+        for r in ex.extract(case):
+            rows.append(dict(case_id=case.case_id, **r))
+        if (i + 1) % 50 == 0 or i + 1 == len(cases):
+            print(f"  {i + 1}/{len(cases)} cases, {(time.time() - t0) / (i + 1):.2f} s/case", flush=True)
+    minutes = (time.time() - t0) / 60
+
+    np.savez_compressed(
+        out_file,
+        case_id=np.array([r["case_id"] for r in rows]),
+        sent_idx=np.array([r["sent_idx"] for r in rows], dtype=np.int32),
+        n_tok=np.array([r["n_tok"] for r in rows], dtype=np.int32),
+        logprob_full=np.array([r["logprob_full"] for r in rows], dtype=np.float32),
+        lookback=np.stack([r["lookback"] for r in rows]).astype(np.float16),
+    )
+
+    # alignment check against GASP's own sentence.csv (same key, same tokens)
+    sent = load_sentences(canon)
+    sent = sent[sent["case_id"].isin({c.case_id for c in cases})]
+    key = {(r["case_id"], r["sent_idx"]): r for r in rows}
+    hit = [key.get((c, s)) for c, s in zip(sent["case_id"], sent["sent_idx"])]
+    covered = sum(h is not None for h in hit)
+    ntok_ok = all(h is None or h["n_tok"] == n for h, n in zip(hit, sent["n_tok"]))
+    diff = np.array([abs(h["logprob_full"] + m) for h, m in zip(hit, sent["mean_surprisal"]) if h is not None])
+    check = dict(gasp_rows=len(sent), covered=covered, extra=len(rows) - covered, n_tok_match=ntok_ok,
+                 logprob_absdiff_mean=float(diff.mean()) if diff.size else None,
+                 logprob_absdiff_max=float(diff.max()) if diff.size else None)
+    print("alignment vs GASP sentence.csv:", check, flush=True)
+
+    meta = dict(tag=tag, model=args.model, device=ex.device, n_cases=len(cases),
+                n_sentences=len(rows), n_layers=ex.n_layers, n_heads=ex.n_heads,
+                features={"lookback": "A_ctx/(A_ctx+A_new) per layer x head, mean over sentence tokens",
+                          "logprob_full": "mean full-context token log-prob (= -GASP mean_surprisal)"},
+                params=p, minutes=round(minutes, 2), alignment=check,
+                env=dict(python=platform.python_version(), torch=torch.__version__))
+    json.dump(meta, open(out_dir / f"meta{suffix}.json", "w"), indent=1)
+    print(f"saved {len(rows)} sentences to {out_file} in {minutes:.1f} min")
+
+
+if __name__ == "__main__":
+    main()
