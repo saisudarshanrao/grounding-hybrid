@@ -11,6 +11,7 @@
 Row order is sentence.csv's, so GASP's source_split still gives its exact dev/test split.
 """
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,9 +30,20 @@ def _signed(js):
 
 
 def load_signals(canon_dir, features_file=None):
-    """sentence.csv + S1 sign features (+ Lookback columns when a features.npz is given)."""
+    """sentence.csv + S1 sign features (+ Lookback columns when a features.npz is given).
+
+    Also adds, per case: task (RAGBench domain / RAGTruth task) and ctx_kept, the fraction of the
+    context inside the scorer's window (GASP's audit), which is known at inference time.
+    """
+    canon_dir = Path(canon_dir)
     df = load_sentences(canon_dir)
     df["min_drop"], df["neg_drop_mass"] = zip(*df["chunk_drops"].map(_signed))
+    meta = pd.read_csv(canon_dir / "response.csv")[["case_id", "task"]].merge(
+        pd.read_csv(canon_dir / "audit.csv")[["case_id", "ctx_ret_frac"]], on="case_id")
+    meta = meta.rename(columns={"ctx_ret_frac": "ctx_kept"})
+    joined = df.merge(meta, on="case_id", how="left", sort=False)
+    assert (joined["case_id"].values == df["case_id"].values).all()
+    df = joined
     lb_cols = []
     if features_file is not None:
         z = np.load(features_file)
