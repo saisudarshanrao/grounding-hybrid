@@ -19,10 +19,13 @@ scripts/mac_smoke_test.py  runs GASP on one toy example; shows the known-answer 
 scripts/extract_features.py  shared single-pass features (Lookback Lens) for one GASP run
 scripts/eval_features.py   scores features under GASP's exact split/classifier/bootstrap
 scripts/run_features.py    all models x datasets, one GPU per model in parallel
-scripts/analyze_prior.py   dev-only check: GASP AUC by no-context prior (S2) bins
+scripts/analyze_prior.py   dev-only check: GASP / Lookback AUC by prior (S2) bins and domain
+scripts/eval_gating.py     dev-only grouped CV of gating variants (span or response level)
+scripts/analyze_coverage.py  dev-only: does coverage-aware (windowed) reading fix truncation?
 kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks week 1 or week 2 runs
 src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
-                           signals.py (S1 signed sensitivity, S2 prior, S3 Lookback)
+                           signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
+                           gating.py (combined / soft / hard gates, dev-only CV)
 ```
 
 `third_party/` and `results/` are not committed; scripts recreate them.
@@ -79,8 +82,10 @@ On Kaggle: attach the week 1 notebook output as input, set `MODE = "features-smo
 
 - [x] Extractor aligned with GASP on the Mac: every sentence covered, log-probs within ~0.001
 - [x] Evaluation reproduces GASP's week 1 numbers exactly; random features score ~0.5
-- [ ] Kaggle: `MODE = "features"` completes for both models x 3 datasets
-- [ ] Lookback Lens span/response AUC vs GASP on RAGTruth, TofuEval, RAGBench
+- [x] Kaggle: `MODE = "features"` completes for both models x 3 datasets
+- [x] Lookback Lens span/response AUC vs GASP on RAGTruth, TofuEval, RAGBench (Lookback wins everywhere)
+- [x] Dev-only gating comparison: no gate beats Lookback alone or the plain combination
+- [ ] Coverage-aware reading (`MODE = "chunked"`) on RAGBench; does TechQA recover? (dev only)
 
 ## Credits
 

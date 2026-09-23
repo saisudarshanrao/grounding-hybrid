@@ -13,6 +13,12 @@ Per answer sentence (its tokens = answer tokens whose start offset lies inside i
   logprob_full  mean full-context token log-prob. Must match -mean_surprisal in GASP's
                 sentence.csv: this is the alignment check.
 
+Coverage-aware reading (chunked=True): the first window is exactly GASP's retained context, so
+`lookback` is unchanged; when the context is longer than max_ctx_tokens, further windows of the
+same size (overlapping by `overlap` tokens) cover the rest, one pass each with the same prompt
+and answer. Per sentence, lookback_max / lookback_mean combine the windows elementwise, so
+evidence beyond GASP's window is read too. Contexts that fit get identical values in all three.
+
 Runs in float32 by default on every device. Eager attention (needed to read the weights)
 overflows in float16 for Qwen2.5: every feature came out NaN on a T4, while GASP's own fp16
 passes use SDPA and are unaffected.
@@ -31,11 +37,12 @@ def default_device():
 
 
 class SharedExtractor:
-    def __init__(self, model_id, device=None, dtype="float32", max_ctx_tokens=1800, max_ans_tokens=256):
+    def __init__(self, model_id, device=None, dtype="float32", max_ctx_tokens=1800, max_ans_tokens=256,
+                 overlap=256):
         self.device = device or default_device()
         self.dtype = dtype
         self.model_id = model_id
-        self.max_ctx, self.max_ans = max_ctx_tokens, max_ans_tokens
+        self.max_ctx, self.max_ans, self.overlap = max_ctx_tokens, max_ans_tokens, overlap
         self.tok = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, torch_dtype=getattr(torch, dtype), attn_implementation="eager").to(self.device).eval()
@@ -58,6 +65,17 @@ class SharedExtractor:
             return (output[0], None) + tuple(output[2:])   # drop the weights immediately
         return hook
 
+    def windows(self, case):
+        """Char spans of the context windows: the first is GASP's retained context."""
+        coffs = self.tok(case.context, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+        spans, start = [], 0
+        while True:
+            end = min(start + self.max_ctx, len(coffs))
+            spans.append((0 if start == 0 else coffs[start][0], coffs[end - 1][1]))
+            if end >= len(coffs):
+                return spans
+            start = end - self.overlap
+
     def encode(self, case):
         """Prompt ids, answer ids and sentence -> answer-token map, exactly as GASP's LM.score."""
         enc = self.tok(case.answer, return_offsets_mapping=True, add_special_tokens=False)
@@ -76,13 +94,8 @@ class SharedExtractor:
                 sents.append((j, tk))
         return pid, aid, sents
 
-    @torch.no_grad()
-    def extract(self, case):
-        """List of per-sentence feature dicts for one case (empty if GASP skipped it)."""
-        enc = self.encode(case)
-        if enc is None:
-            return []
-        pid, aid, sents = enc
+    def _pass(self, pid, aid):
+        """One forward pass: answer-token log-probs and Lookback ratios (layers x heads x A)."""
         P, A = len(pid), len(aid)
         ids = torch.tensor([pid + aid], device=self.device)
         self._P, self._lookback = P, [None] * self.n_layers
@@ -92,7 +105,29 @@ class SharedExtractor:
             self._P = None
         lp = torch.log_softmax(logits.float(), dim=-1)
         tlp = lp[torch.arange(A, device=self.device), ids[0, P:]].cpu().numpy()
-        lb = torch.stack(self._lookback).cpu().numpy()     # layers x heads x A
+        lb = torch.stack(self._lookback).cpu().numpy()
         self._lookback = None
-        return [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()),
-                     lookback=lb[:, :, tk].mean(-1)) for j, tk in sents]
+        return tlp, lb
+
+    @torch.no_grad()
+    def extract(self, case, chunked=False):
+        """List of per-sentence feature dicts for one case (empty if GASP skipped it)."""
+        enc = self.encode(case)
+        if enc is None:
+            return []
+        pid, aid, sents = enc
+        tlp, lb = self._pass(pid, aid)
+        out = [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()),
+                    lookback=lb[:, :, tk].mean(-1)) for j, tk in sents]
+        if chunked:
+            per_window = [[r["lookback"]] for r in out]
+            spans = self.windows(case)
+            for cs, ce in spans[1:]:
+                pw = self.tok(PROMPT.format(ctx=case.context[cs:ce], query=case.query)).input_ids
+                _, lbw = self._pass(pw, aid)
+                for k, (_, tk) in enumerate(sents):
+                    per_window[k].append(lbw[:, :, tk].mean(-1))
+            for r, ws in zip(out, per_window):
+                ws = np.stack(ws)
+                r.update(lookback_max=ws.max(0), lookback_mean=ws.mean(0), n_windows=len(spans))
+        return out

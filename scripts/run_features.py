@@ -10,6 +10,7 @@ Usage:
     python scripts/run_features.py --canon_root /kaggle/input/<...>/canon_results \
         --outroot /kaggle/working/results/features
     python scripts/run_features.py ... --smoke      # 20 cases per run, extraction only
+    python scripts/run_features.py ... --chunked --datasets ragbench --no_eval   # coverage-aware
 """
 import argparse
 import os
@@ -31,7 +32,7 @@ def tag_for(model, dataset, k):
 def run_worker(model, args, cfg):
     """All datasets for one model, sequentially, on whatever GPU this process was given."""
     k = cfg["params"]["k_chunks"]
-    for ds in cfg["datasets"]:
+    for ds in (args.datasets or cfg["datasets"]):
         tag = tag_for(model, ds, k)
         canon = Path(args.canon_root) / tag
         if not (canon / "cases.jsonl").exists():
@@ -42,11 +43,13 @@ def run_worker(model, args, cfg):
                "--model", model, "--outroot", args.outroot]
         if args.smoke:
             cmd += ["--max_cases", "20"]
+        if args.chunked:
+            cmd += ["--chunked"]
         if subprocess.run(cmd).returncode != 0:
             print(f"[error] extraction failed for {tag}", flush=True)
             continue
         out_dir = Path(args.outroot) / tag
-        if args.smoke or (out_dir / "eval.json").exists():
+        if args.smoke or args.no_eval or args.chunked or (out_dir / "eval.json").exists():
             continue
         r = subprocess.run([sys.executable, "-W", "ignore", str(ROOT / "scripts" / "eval_features.py"),
                             "--canon_dir", str(canon), "--features", str(out_dir / "features.npz")],
@@ -70,6 +73,9 @@ def main():
     ap.add_argument("--outroot", default=str(ROOT / "results" / "features"))
     ap.add_argument("--config", default=str(ROOT / "configs" / "reproduce.yaml"))
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--chunked", action="store_true", help="coverage-aware reading (extraction only)")
+    ap.add_argument("--datasets", nargs="*", help="override the dataset list")
+    ap.add_argument("--no_eval", action="store_true", help="extract only; evaluate on the Mac")
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config))
@@ -89,7 +95,9 @@ def main():
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % n_gpu), PYTHONUNBUFFERED="1") if n_gpu \
             else dict(os.environ, PYTHONUNBUFFERED="1")
         cmd = [sys.executable, __file__, "--worker", model, "--canon_root", args.canon_root,
-               "--outroot", args.outroot, "--config", args.config] + (["--smoke"] if args.smoke else [])
+               "--outroot", args.outroot, "--config", args.config]
+        cmd += (["--smoke"] if args.smoke else []) + (["--chunked"] if args.chunked else [])
+        cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
         short = model.split("/")[-1]
         p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         pump = threading.Thread(target=_pump, args=(p, log_dir / f"{short}.log", short))

@@ -13,6 +13,8 @@ MODE (set below):
                                    both models in parallel, one per T4. Needs the week 1 GASP output
                                    attached as input: Add Input > Your Work > Notebooks > the GASP
                                    notebook (its results/gasp_repro/canon_results is found automatically).
+  "chunked-smoke" / "chunked"      week 2b: coverage-aware reading (whole context in 1800-token
+                                   windows) on RAGBench, extraction only; evaluate on the Mac.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -24,7 +26,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"          # "smoke", "full", "features-smoke" or "features"
+MODE = "smoke"          # "smoke", "full", "features-smoke", "features", "chunked-smoke", "chunked"
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -67,12 +69,13 @@ sh("python scripts/setup_gasp.py", cwd=REPO_DIR)
 flag = "--smoke" if MODE.endswith("smoke") else ""
 if MODE in ("smoke", "full"):
     sh(f"python scripts/reproduce_gasp.py {flag} --outroot {OUTROOT}/gasp_repro", cwd=REPO_DIR)
-elif MODE in ("features-smoke", "features"):
+elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked"):
     found = [d for d in sorted(glob.glob("/kaggle/input/**/canon_results", recursive=True)) if "_smoke" not in d]
     if not found:
         raise RuntimeError("attach the week 1 GASP notebook output as input (see the notes at the top)")
     print("GASP runs read from", found[0])
-    sh(f"python scripts/run_features.py {flag} --canon_root {found[0]} --outroot {OUTROOT}/features",
+    extra = "--chunked --datasets ragbench" if MODE.startswith("chunked") else ""
+    sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
 else:
     raise ValueError(f"unknown MODE {MODE!r}")

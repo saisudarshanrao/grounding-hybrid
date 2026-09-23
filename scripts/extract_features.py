@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--max_cases", type=int, default=0, help="cap cases (0 = all); for quick tests")
     ap.add_argument("--device", default=None)
     ap.add_argument("--dtype", default="float32", help="float16 makes Qwen2.5 eager attention overflow")
+    ap.add_argument("--chunked", action="store_true", help="coverage-aware reading of the whole context")
     args = ap.parse_args()
 
     canon = Path(args.canon_dir)
@@ -45,7 +46,7 @@ def main():
     if not tag.startswith(args.model.split("/")[-1] + "_"):
         sys.exit(f"{tag} was not scored by {args.model}: sentence rows would not align")
     out_dir = Path(args.outroot) / tag
-    suffix = f"_first{args.max_cases}" if args.max_cases else ""
+    suffix = ("_chunked" if args.chunked else "") + (f"_first{args.max_cases}" if args.max_cases else "")
     out_file = out_dir / f"features{suffix}.npz"
     if out_file.exists():
         print(f"[skip] {out_file} exists")
@@ -67,20 +68,24 @@ def main():
     t0 = time.time()
     rows = []
     for i, case in enumerate(cases):
-        for r in ex.extract(case):
+        for r in ex.extract(case, chunked=args.chunked):
             rows.append(dict(case_id=case.case_id, **r))
         if (i + 1) % 50 == 0 or i + 1 == len(cases):
             print(f"  {i + 1}/{len(cases)} cases, {(time.time() - t0) / (i + 1):.2f} s/case", flush=True)
     minutes = (time.time() - t0) / 60
 
-    np.savez_compressed(
-        out_file,
+    arrays = dict(
         case_id=np.array([r["case_id"] for r in rows]),
         sent_idx=np.array([r["sent_idx"] for r in rows], dtype=np.int32),
         n_tok=np.array([r["n_tok"] for r in rows], dtype=np.int32),
         logprob_full=np.array([r["logprob_full"] for r in rows], dtype=np.float32),
         lookback=np.stack([r["lookback"] for r in rows]).astype(np.float16),
     )
+    if args.chunked:
+        arrays.update(lookback_max=np.stack([r["lookback_max"] for r in rows]).astype(np.float16),
+                      lookback_mean=np.stack([r["lookback_mean"] for r in rows]).astype(np.float16),
+                      n_windows=np.array([r["n_windows"] for r in rows], dtype=np.int32))
+    np.savez_compressed(out_file, **arrays)
 
     # alignment check against GASP's own sentence.csv (same key, same tokens)
     sent = load_sentences(canon)
@@ -90,14 +95,17 @@ def main():
     covered = sum(h is not None for h in hit)
     ntok_ok = all(h is None or h["n_tok"] == n for h, n in zip(hit, sent["n_tok"]))
     diff = np.array([abs(h["logprob_full"] + m) for h, m in zip(hit, sent["mean_surprisal"]) if h is not None])
-    nan_rows = sum(1 for r in rows if not np.isfinite(r["logprob_full"]) or not np.isfinite(r["lookback"]).all())
+    lb_keys = ["lookback"] + (["lookback_max", "lookback_mean"] if args.chunked else [])
+    nan_rows = sum(1 for r in rows if not np.isfinite(r["logprob_full"])
+                   or not all(np.isfinite(r[k]).all() for k in lb_keys))
     check = dict(gasp_rows=len(sent), covered=covered, extra=len(rows) - covered, n_tok_match=ntok_ok,
                  nan_rows=nan_rows,
                  logprob_absdiff_mean=float(diff.mean()) if diff.size else None,
                  logprob_absdiff_max=float(diff.max()) if diff.size else None)
     print("alignment vs GASP sentence.csv:", check, flush=True)
 
-    meta = dict(tag=tag, model=args.model, device=ex.device, dtype=ex.dtype, n_cases=len(cases),
+    meta = dict(tag=tag, model=args.model, device=ex.device, dtype=ex.dtype, chunked=args.chunked,
+                overlap=ex.overlap, n_cases=len(cases),
                 n_sentences=len(rows), n_layers=ex.n_layers, n_heads=ex.n_heads,
                 features={"lookback": "A_ctx/(A_ctx+A_new) per layer x head, mean over sentence tokens",
                           "logprob_full": "mean full-context token log-prob (= -GASP mean_surprisal)"},
