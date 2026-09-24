@@ -13,6 +13,7 @@ Usage:
     python scripts/run_features.py ... --chunked --datasets ragbench --no_eval   # coverage-aware
     python scripts/run_features.py ... --chunked --max_ctx_tokens 512 --overlap 128 \
         --datasets ragtruth tofueval          # controlled truncation
+    python scripts/run_features.py ... --redeep   # ReDeEP scores (extraction only)
 """
 import argparse
 import os
@@ -47,13 +48,15 @@ def run_worker(model, args, cfg):
             cmd += ["--max_cases", "20"]
         if args.chunked:
             cmd += ["--chunked"]
+        if args.redeep:
+            cmd += ["--redeep"]
         if args.max_ctx_tokens:
             cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)]
         if subprocess.run(cmd).returncode != 0:
             print(f"[error] extraction failed for {tag}", flush=True)
             continue
         out_dir = Path(args.outroot) / tag
-        if args.smoke or args.no_eval or args.chunked or (out_dir / "eval.json").exists():
+        if args.smoke or args.no_eval or args.chunked or args.redeep or (out_dir / "eval.json").exists():
             continue
         r = subprocess.run([sys.executable, "-W", "ignore", str(ROOT / "scripts" / "eval_features.py"),
                             "--canon_dir", str(canon), "--features", str(out_dir / "features.npz")],
@@ -80,6 +83,7 @@ def main():
     ap.add_argument("--chunked", action="store_true", help="coverage-aware reading (extraction only)")
     ap.add_argument("--datasets", nargs="*", help="override the dataset list")
     ap.add_argument("--no_eval", action="store_true", help="extract only; evaluate on the Mac")
+    ap.add_argument("--redeep", action="store_true", help="also extract ReDeEP scores (extraction only)")
     ap.add_argument("--max_ctx_tokens", type=int, default=0, help="controlled truncation window")
     ap.add_argument("--overlap", type=int, default=256)
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
@@ -103,6 +107,7 @@ def main():
         cmd = [sys.executable, __file__, "--worker", model, "--canon_root", args.canon_root,
                "--outroot", args.outroot, "--config", args.config]
         cmd += (["--smoke"] if args.smoke else []) + (["--chunked"] if args.chunked else [])
+        cmd += ["--redeep"] if args.redeep else []
         cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
         cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)] if args.max_ctx_tokens else []
         short = model.split("/")[-1]

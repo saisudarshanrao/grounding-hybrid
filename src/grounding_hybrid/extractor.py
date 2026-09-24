@@ -13,21 +13,37 @@ Per answer sentence (its tokens = answer tokens whose start offset lies inside i
   logprob_full  mean full-context token log-prob. Must match -mean_surprisal in GASP's
                 sentence.csv: this is the alignment check.
 
+ReDeEP scores (redeep=True; Sun et al., ICLR 2025), averaged over the sentence's tokens:
+  ecs           [layers, heads] External Context Score: cosine similarity between the answer
+                token's last-layer hidden state and the mean last-layer hidden state of the
+                top-10% retrieved-context tokens that head attends to most (the context span
+                only, not the question or template).
+  pks           [layers] Parametric Knowledge Score: Jensen-Shannon divergence between the
+                logit-lens vocabulary distributions (final norm + unembedding) of the residual
+                stream just before and just after the layer's FFN.
+Head and layer selection (ReDeEP's copying heads / knowledge FFNs) happens later, on training
+folds only, so every head and layer is kept here.
+
 Coverage-aware reading (chunked=True): the first window is exactly GASP's retained context, so
 `lookback` is unchanged; when the context is longer than max_ctx_tokens, further windows of the
 same size (overlapping by `overlap` tokens) cover the rest, one pass each with the same prompt
 and answer. Per sentence, lookback_max / lookback_mean combine the windows elementwise, so
 evidence beyond GASP's window is read too. Contexts that fit get identical values in all three.
+ReDeEP scores come from the first window only (the baseline sees what GASP sees).
 
 Runs in float32 by default on every device. Eager attention (needed to read the weights)
 overflows in float16 for Qwen2.5: every feature came out NaN on a T4, while GASP's own fp16
 passes use SDPA and are unaffected.
 """
+import math
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 PROMPT = "Context:\n{ctx}\n\nQuestion: {query}\n\nAnswer: "   # GASP's prompt, no chat template
+CTX_START = len("Context:\n")                                  # first context character in PROMPT
 
 
 def default_device():
@@ -38,19 +54,26 @@ def default_device():
 
 class SharedExtractor:
     def __init__(self, model_id, device=None, dtype="float32", max_ctx_tokens=1800, max_ans_tokens=256,
-                 overlap=256):
+                 overlap=256, redeep=False, ecs_topk=0.1):
         self.device = device or default_device()
         self.dtype = dtype
         self.model_id = model_id
         self.max_ctx, self.max_ans, self.overlap = max_ctx_tokens, max_ans_tokens, overlap
+        self.redeep, self.ecs_topk = redeep, ecs_topk
         self.tok = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, torch_dtype=getattr(torch, dtype), attn_implementation="eager").to(self.device).eval()
         layers = self.model.model.layers
         self.n_layers, self.n_heads = len(layers), self.model.config.num_attention_heads
-        self._P, self._lookback = None, None
+        self._P, self._A, self._ctx, self._lookback = None, None, None, None
+        self._ecs_idx, self._mid, self._pks, self._xl, self._in_lens = None, None, None, None, False
         for i, layer in enumerate(layers):
             layer.self_attn.register_forward_hook(self._attention_hook(i))
+            if redeep:
+                layer.post_attention_layernorm.register_forward_pre_hook(self._mid_hook(i))
+                layer.register_forward_hook(self._ffn_hook(i))
+        if redeep:
+            self.model.model.norm.register_forward_hook(self._final_hook)
 
     def _attention_hook(self, layer_idx):
         def hook(module, args, output):
@@ -62,8 +85,41 @@ class SharedExtractor:
                 # causal mask: row P+i is zero past column P+i, so this sums columns P..P+i
                 a_new = w[..., P:].sum(-1) / torch.arange(1, w.shape[1] + 1, device=w.device)
                 self._lookback[layer_idx] = a_ctx / (a_ctx + a_new)
+                if self._ctx is not None:              # ReDeEP: top-k% attended context tokens
+                    c0, c1 = self._ctx
+                    k = max(1, math.ceil(self.ecs_topk * (c1 - c0)))
+                    self._ecs_idx[layer_idx] = w[..., c0:c1].topk(k, dim=-1).indices + c0
             return (output[0], None) + tuple(output[2:])   # drop the weights immediately
         return hook
+
+    def _mid_hook(self, layer_idx):
+        def hook(module, args):
+            if self._ctx is not None:                  # residual stream before the FFN
+                self._mid[layer_idx] = args[0][0, self._P:self._P + self._A].float()
+        return hook
+
+    def _ffn_hook(self, layer_idx):
+        def hook(module, args, output):
+            if self._ctx is not None:                  # residual stream after the FFN
+                lp = self._lens(self._mid[layer_idx])
+                lq = self._lens(output[0][0, self._P:self._P + self._A].float())
+                lm = torch.logaddexp(lp, lq) - math.log(2.0)
+                self._pks[layer_idx] = 0.5 * ((lp.exp() * (lp - lm)).sum(-1) + (lq.exp() * (lq - lm)).sum(-1))
+                self._mid[layer_idx] = None
+        return hook
+
+    def _final_hook(self, module, args, output):
+        if self._ctx is not None and not self._in_lens:
+            self._xl = output[0].float()               # last-layer hidden states (after final norm), T x d
+
+    def _lens(self, x):
+        """Logit lens: log-softmax of unembed(final_norm(x)), rows of x = answer positions."""
+        self._in_lens = True
+        try:
+            h = self.model.model.norm(x.to(self.model.dtype))
+        finally:
+            self._in_lens = False
+        return torch.log_softmax(self.model.lm_head(h).float(), dim=-1)
 
     def windows(self, case):
         """Char spans of the context windows: the first is GASP's retained context."""
@@ -94,11 +150,22 @@ class SharedExtractor:
                 sents.append((j, tk))
         return pid, aid, sents
 
-    def _pass(self, pid, aid):
-        """One forward pass: answer-token log-probs and Lookback ratios (layers x heads x A)."""
+    def context_range(self, ctx, query, pid):
+        """Token positions [c0, c1) of the retrieved context inside the prompt (ReDeEP's ECS)."""
+        enc = self.tok(PROMPT.format(ctx=ctx, query=query), return_offsets_mapping=True)
+        assert enc.input_ids == pid, "prompt tokenization changed"
+        pos = [i for i, (s, e) in enumerate(enc["offset_mapping"]) if e > s and CTX_START <= s < CTX_START + len(ctx)]
+        return (pos[0], pos[-1] + 1) if pos else None
+
+    def _pass(self, pid, aid, ctx_range=None):
+        """One forward pass: answer-token log-probs and Lookback ratios (layers x heads x A);
+        with ctx_range (ReDeEP) also ECS (layers x heads x A) and PKS (layers x A)."""
         P, A = len(pid), len(aid)
         ids = torch.tensor([pid + aid], device=self.device)
-        self._P, self._lookback = P, [None] * self.n_layers
+        self._P, self._A, self._lookback = P, A, [None] * self.n_layers
+        self._ctx = ctx_range if self.redeep else None
+        if self._ctx is not None:
+            self._ecs_idx, self._mid, self._pks = [None] * self.n_layers, [None] * self.n_layers, [None] * self.n_layers
         try:
             logits = self.model(ids, output_attentions=True, use_cache=False).logits[0, P - 1:P - 1 + A]
         finally:
@@ -107,7 +174,21 @@ class SharedExtractor:
         tlp = lp[torch.arange(A, device=self.device), ids[0, P:]].cpu().numpy()
         lb = torch.stack(self._lookback).cpu().numpy()
         self._lookback = None
-        return tlp, lb
+        if self._ctx is None:
+            return tlp, lb, None, None
+        X = self._xl                                   # T x d
+        xa = F.normalize(X[P:P + A], dim=-1)           # A x d
+        ecs = []
+        for idx in self._ecs_idx:                      # heads x A x k
+            H, _, k = idx.shape
+            M = torch.zeros(H * A, X.shape[0], device=X.device)
+            M.scatter_(1, idx.reshape(H * A, k), 1.0 / k)
+            E = (M @ X).reshape(H, A, -1)              # mean hidden state of the attended tokens
+            ecs.append((F.normalize(E, dim=-1) * xa).sum(-1))
+        ecs = torch.stack(ecs).cpu().numpy()
+        pks = torch.stack(self._pks).cpu().numpy()
+        self._ctx, self._ecs_idx, self._mid, self._pks, self._xl = None, None, None, None, None
+        return tlp, lb, ecs, pks
 
     @torch.no_grad()
     def extract(self, case, chunked=False):
@@ -116,15 +197,26 @@ class SharedExtractor:
         if enc is None:
             return []
         pid, aid, sents = enc
-        tlp, lb = self._pass(pid, aid)
+        rng = None
+        if self.redeep:
+            coffs = self.tok(case.context, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
+            ctx_ret = coffs[self.max_ctx - 1][1] if len(coffs) >= self.max_ctx else len(case.context)
+            rng = self.context_range(case.context[:ctx_ret], case.query, pid)
+        tlp, lb, ecs, pks = self._pass(pid, aid, rng)
         out = [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()),
                     lookback=lb[:, :, tk].mean(-1)) for j, tk in sents]
+        if ecs is not None:
+            for r, (_, tk) in zip(out, sents):
+                r.update(ecs=ecs[:, :, tk].mean(-1), pks=pks[:, tk].mean(-1))
+        elif self.redeep:                              # no context tokens: ReDeEP is undefined
+            for r in out:
+                r.update(ecs=np.full((self.n_layers, self.n_heads), np.nan), pks=np.full(self.n_layers, np.nan))
         if chunked:
             per_window = [[r["lookback"]] for r in out]
             spans = self.windows(case)
             for cs, ce in spans[1:]:
                 pw = self.tok(PROMPT.format(ctx=case.context[cs:ce], query=case.query)).input_ids
-                _, lbw = self._pass(pw, aid)
+                _, lbw, _, _ = self._pass(pw, aid)
                 for k, (_, tk) in enumerate(sents):
                     per_window[k].append(lbw[:, :, tk].mean(-1))
             for r, ws in zip(out, per_window):

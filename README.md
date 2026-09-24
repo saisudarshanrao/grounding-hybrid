@@ -22,7 +22,9 @@ scripts/run_features.py    all models x datasets, one GPU per model in parallel
 scripts/analyze_prior.py   dev-only check: GASP / Lookback AUC by prior (S2) bins and domain
 scripts/eval_gating.py     dev-only grouped CV of gating variants (span or response level)
 scripts/analyze_coverage.py  dev-only: does coverage-aware (windowed) reading fix truncation?
-kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks week 1 or week 2 runs
+scripts/coverage_checks.py   dev-only: pooled test + fixed-classifier mechanism check for windowed reading
+scripts/eval_redeep.py     ReDeEP baseline vs Lookback vs GASP (dev CV, or one --test look)
+kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks the run (GASP, features, chunked, trunc, redeep)
 src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
                            signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
                            gating.py (combined / soft / hard gates, dev-only CV)
@@ -85,7 +87,25 @@ On Kaggle: attach the week 1 notebook output as input, set `MODE = "features-smo
 - [x] Kaggle: `MODE = "features"` completes for both models x 3 datasets
 - [x] Lookback Lens span/response AUC vs GASP on RAGTruth, TofuEval, RAGBench (Lookback wins everywhere)
 - [x] Dev-only gating comparison: no gate beats Lookback alone or the plain combination
-- [ ] Coverage-aware reading (`MODE = "chunked"`) on RAGBench; does TechQA recover? (dev only)
+- [x] Coverage-aware reading (`MODE = "chunked"`) on RAGBench: TechQA direction right but n.s. (31 dev sources)
+- [x] Controlled truncation (`MODE = "trunc"`, 512-token windows, RAGTruth + TofuEval): max over windows
+      recovers ~70% of the truncation loss (pooled, significant); fixed-classifier check confirms (dev only)
+
+## Week 3: ReDeEP baseline
+
+ReDeEP's ECS (per head) and PKS (per layer) come from the same single pass (`--redeep`); head/layer
+selection and weights are chosen on training folds only.
+
+```bash
+python scripts/extract_features.py --canon_dir results/gasp_repro/canon_results/Qwen2.5-1.5B-Instruct_ragtruth_K5 \
+    --model Qwen/Qwen2.5-1.5B-Instruct --redeep --max_cases 3       # quick Mac check
+python -W ignore scripts/eval_redeep.py                              # dev CV, after the Kaggle run
+```
+
+On Kaggle: `MODE = "redeep-smoke"`, then `"redeep"`; download the output and evaluate on the Mac.
+
+- [ ] Kaggle: `MODE = "redeep"` completes for both models x 3 datasets (lookback equals Week 2's)
+- [ ] Dev CV: ReDeEP vs Lookback vs GASP; then one logged test look
 
 ## Credits
 

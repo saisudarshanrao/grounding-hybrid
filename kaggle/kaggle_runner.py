@@ -17,6 +17,8 @@ MODE (set below):
                                    windows) on RAGBench, extraction only; evaluate on the Mac.
   "trunc-smoke" / "trunc"          week 2b: controlled truncation, 512-token windows on RAGTruth and
                                    TofuEval, extraction only; evaluate on the Mac.
+  "redeep-smoke" / "redeep"        week 3: ReDeEP baseline scores (ECS per head, PKS per layer) plus
+                                   Lookback, all datasets, extraction only; evaluate on the Mac.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -28,7 +30,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features-smoke, features, chunked-smoke, chunked, trunc-smoke, trunc
+MODE = "smoke"   # smoke, full, features-smoke, features, chunked-smoke, chunked, trunc-smoke, trunc, redeep-smoke, redeep
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -71,13 +73,15 @@ sh("python scripts/setup_gasp.py", cwd=REPO_DIR)
 flag = "--smoke" if MODE.endswith("smoke") else ""
 if MODE in ("smoke", "full"):
     sh(f"python scripts/reproduce_gasp.py {flag} --outroot {OUTROOT}/gasp_repro", cwd=REPO_DIR)
-elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-smoke", "trunc"):
+elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-smoke", "trunc",
+              "redeep-smoke", "redeep"):
     found = [d for d in sorted(glob.glob("/kaggle/input/**/canon_results", recursive=True)) if "_smoke" not in d]
     if not found:
         raise RuntimeError("attach the week 1 GASP notebook output as input (see the notes at the top)")
     print("GASP runs read from", found[0])
     extra = {"chunked": "--chunked --datasets ragbench",
-             "trunc": "--chunked --max_ctx_tokens 512 --overlap 128 --datasets ragtruth tofueval"}.get(
+             "trunc": "--chunked --max_ctx_tokens 512 --overlap 128 --datasets ragtruth tofueval",
+             "redeep": "--redeep"}.get(
         MODE.replace("-smoke", ""), "")
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
