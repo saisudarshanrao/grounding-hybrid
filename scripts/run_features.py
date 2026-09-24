@@ -35,6 +35,7 @@ def tag_for(model, dataset, k):
 def run_worker(model, args, cfg):
     """All datasets for one model, sequentially, on whatever GPU this process was given."""
     k = cfg["params"]["k_chunks"]
+    failed = []
     for ds in (args.datasets or cfg["datasets"]):
         tag = tag_for(model, ds, k)
         canon = Path(args.canon_root) / tag
@@ -54,6 +55,7 @@ def run_worker(model, args, cfg):
             cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)]
         if subprocess.run(cmd).returncode != 0:
             print(f"[error] extraction failed for {tag}", flush=True)
+            failed.append(tag)
             continue
         out_dir = Path(args.outroot) / tag
         if args.smoke or args.no_eval or args.chunked or args.redeep or (out_dir / "eval.json").exists():
@@ -63,6 +65,7 @@ def run_worker(model, args, cfg):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (out_dir / "eval.txt").write_text(r.stdout)
         print(r.stdout, flush=True)
+    return failed
 
 
 def _pump(proc, log_path, prefix):
@@ -90,8 +93,8 @@ def main():
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config))
     if args.worker:
-        run_worker(args.worker, args, cfg)
-        return
+        failed = run_worker(args.worker, args, cfg)
+        sys.exit(f"failed: {', '.join(failed)}" if failed else 0)
 
     import torch
     n_gpu = torch.cuda.device_count()
