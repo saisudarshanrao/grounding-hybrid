@@ -10,6 +10,8 @@ sentence) and scores:
   ReDeEP [cv]         the "multivariate regression" form: logistic regression on all ECS + PKS
                       features, C tuned by grouped CV on the training part (as Lookback [cv]).
   Lookback [cv], GASP+base, Lookback+ReDeEP [cv] for the one-protocol comparison (RQ3).
+  With coverage-aware features (features_chunked_redeep.npz, e.g. TechQA) also Lookback-max [cv], the
+  frozen part-B method (Lookback ratios max over all context windows), alone and with ReDeEP.
 
 Two modes, following the dev/test rule in CLAUDE.md:
   default   grouped 5-fold CV INSIDE the dev split (design choices, no test look)
@@ -49,6 +51,8 @@ def load(canon, feat, partial=False):
     z = np.load(feat)
     n = len(z["case_id"])
     blocks = {"lb": z["lookback"], "ecs": z["ecs"], "pks": z["pks"]}
+    if "lookback_max" in z.files:
+        blocks["lbmax"] = z["lookback_max"]
     cols = {k: [f"{k}_{i}" for i in range(v.reshape(n, -1).shape[1])] for k, v in blocks.items()}
     feats = pd.DataFrame(np.concatenate([v.astype(np.float32).reshape(n, -1) for v in blocks.values()], axis=1),
                          columns=sum(cols.values(), []))
@@ -143,7 +147,10 @@ def methods(cols):
             "ReDeEP [cv]": lambda: LinearCV(cols["ecs"] + cols["pks"]),
             "ECS only [cv]": lambda: LinearCV(cols["ecs"]),
             "PKS only [cv]": lambda: LinearCV(cols["pks"]),
-            "Lookback+ReDeEP [cv]": lambda: LinearCV(cols["lb"] + cols["ecs"] + cols["pks"])}
+            "Lookback+ReDeEP [cv]": lambda: LinearCV(cols["lb"] + cols["ecs"] + cols["pks"]),
+            **({"Lookback-max [cv] (B)": lambda: LinearCV(cols["lbmax"]),
+                "Lookback-max+ReDeEP [cv]": lambda: LinearCV(cols["lbmax"] + cols["ecs"] + cols["pks"])}
+               if "lbmax" in cols else {})}
 
 
 def as_series(s, df):
@@ -174,9 +181,11 @@ def test_eval(dev, test, cols):
         if isinstance(m, ReDeEP):
             out[name]["chosen"] = m.desc()
     cmp = {}
-    for a, b in [("ReDeEP", "GASP+base [reference]"), ("ReDeEP [cv]", "GASP+base [reference]"),
-                 ("Lookback [cv]", "ReDeEP"), ("Lookback [cv]", "ReDeEP [cv]"),
-                 ("Lookback+ReDeEP [cv]", "Lookback [cv]")]:
+    pairs = [("ReDeEP", "GASP+base [reference]"), ("ReDeEP [cv]", "GASP+base [reference]"),
+             ("Lookback [cv]", "ReDeEP"), ("Lookback [cv]", "ReDeEP [cv]"), ("Lookback+ReDeEP [cv]", "Lookback [cv]")]
+    if "lbmax" in cols:
+        pairs += [("Lookback-max [cv] (B)", "Lookback [cv]"), ("Lookback-max [cv] (B)", "GASP+base [reference]")]
+    for a, b in pairs:
         common = scores[a].index.intersection(scores[b].index)
         cmp[f"{a} - {b}"] = analyze_gasp.paired_bootstrap_diff(test, "label", scores[a].loc[common],
                                                                scores[b].loc[common])
