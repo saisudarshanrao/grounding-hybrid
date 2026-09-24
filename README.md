@@ -24,6 +24,7 @@ scripts/eval_gating.py     dev-only grouped CV of gating variants (span or respo
 scripts/analyze_coverage.py  dev-only: does coverage-aware (windowed) reading fix truncation?
 scripts/coverage_checks.py   dev-only: pooled test + fixed-classifier mechanism check for windowed reading
 scripts/eval_redeep.py     ReDeEP baseline vs Lookback vs GASP (dev CV, or one --test look)
+scripts/gasp_longctx.py    GASP's unmodified pipeline on one long-context RAGBench domain (TechQA, all splits)
 kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks the run (GASP, features, chunked, trunc, redeep)
 src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
                            signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
@@ -106,6 +107,23 @@ On Kaggle: `MODE = "redeep-smoke"`, then `"redeep"`; download the output and eva
 
 - [ ] Kaggle: `MODE = "redeep"` completes for both models x 3 datasets (lookback equals Week 2's)
 - [ ] Dev CV: ReDeEP vs Lookback vs GASP; then one logged test look
+
+## Week 3b: coverage-aware reading on real truncation (TechQA)
+
+GASP's RAGBench sample holds only 49 TechQA cases. `--datasets techqa` draws GASP's balanced
+sample (300/class, seed 42) from TechQA alone, pooled over all RAGBench splits: 600 cases, 502
+sources, 97% of contexts longer than the 1800-token window. GASP's own code scores it; then one
+pass extracts coverage-aware Lookback + ReDeEP features.
+
+```bash
+python scripts/reproduce_gasp.py --models Qwen/Qwen2.5-0.5B-Instruct --datasets techqa --max_cases 3   # Mac check
+python -W ignore scripts/analyze_coverage.py --suffix chunked_redeep --datasets techqa             # after Kaggle
+```
+
+On Kaggle: `MODE = "techqa-smoke"`, then `"techqa"` (no input needed: GASP runs inside).
+
+- [ ] Kaggle: `MODE = "techqa"` completes (GASP + features, both models)
+- [ ] Dev: window1 vs max on real truncation; GASP / Lookback / ReDeEP on long contexts
 
 ## Credits
 

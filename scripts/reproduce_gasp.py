@@ -5,6 +5,7 @@ Usage:
     python scripts/reproduce_gasp.py                  # full run: all models x all datasets
     python scripts/reproduce_gasp.py --models Qwen/Qwen2.5-1.5B-Instruct --datasets ragtruth
     python scripts/reproduce_gasp.py --dry-run        # print the commands without running them
+    python scripts/reproduce_gasp.py --datasets techqa   # long-context RAGBench domain (gasp_longctx.py)
 
 The run is resumable: a (model, dataset) pair whose sentence.csv already exists is skipped,
 so if a Kaggle session times out, just run the same command again.
@@ -26,6 +27,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 GASP_PIPE = ROOT / "third_party" / "GASP" / "pipeline"
+LONGCTX_DOMAINS = ("techqa",)   # one RAGBench domain, all splits, via scripts/gasp_longctx.py
 
 
 def tag_for(model, dataset, k):
@@ -71,6 +73,7 @@ def main():
     ap.add_argument("--datasets", nargs="*", help="override the dataset list")
     ap.add_argument("--smoke", action="store_true", help="tiny run to test the pipeline")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--max_cases", type=int, default=0, help="cap cases per run (quick tests)")
     args = ap.parse_args()
 
     if not GASP_PIPE.exists():
@@ -85,7 +88,7 @@ def main():
     else:
         models = args.models or cfg["models"]
         datasets = args.datasets or cfg["datasets"]
-        max_cases = 0
+        max_cases = args.max_cases
         outroot = Path(args.outroot)
 
     canon = outroot / "canon_results"
@@ -103,8 +106,9 @@ def main():
 
             print(f"\n=== {tag} ===", flush=True)
             t0 = time.time()
-            cmd = [sys.executable, str(GASP_PIPE / "run_gasp.py"),
-                   "--model", model, "--dataset", ds,
+            entry = ([str(ROOT / "scripts" / "gasp_longctx.py"), "--domain", ds, "--dataset", "ragbench"]
+                     if ds in LONGCTX_DOMAINS else [str(GASP_PIPE / "run_gasp.py"), "--dataset", ds])
+            cmd = [sys.executable] + entry + ["--model", model,
                    "--k_chunks", str(p["k_chunks"]),
                    "--max_ctx_tokens", str(p["max_ctx_tokens"]),
                    "--max_ans_tokens", str(p["max_ans_tokens"]),
