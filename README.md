@@ -25,6 +25,7 @@ scripts/analyze_coverage.py  dev-only: does coverage-aware (windowed) reading fi
 scripts/coverage_checks.py   dev-only: pooled test + fixed-classifier mechanism check for windowed reading
 scripts/eval_redeep.py     ReDeEP baseline vs Lookback vs GASP (dev CV, or one --test look)
 scripts/gasp_longctx.py    GASP's unmodified pipeline on one long-context RAGBench domain (TechQA, all splits)
+scripts/cost_table.py      seconds per case for every detector, from the saved run timings
 kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks the run (GASP, features, chunked, trunc, redeep)
 src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
                            signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
@@ -105,8 +106,8 @@ python -W ignore scripts/eval_redeep.py                              # dev CV, a
 
 On Kaggle: `MODE = "redeep-smoke"`, then `"redeep"`; download the output and evaluate on the Mac.
 
-- [ ] Kaggle: `MODE = "redeep"` completes for both models x 3 datasets (lookback equals Week 2's)
-- [ ] Dev CV: ReDeEP vs Lookback vs GASP; then one logged test look
+- [x] Kaggle: `MODE = "redeep"` completes for both models x 3 datasets (lookback equals Week 2's exactly)
+- [x] Dev CV: Lookback > ReDeEP [cv] >= GASP ~ training-free ReDeEP (test look after the method freeze)
 
 ## Week 3b: coverage-aware reading on real truncation (TechQA)
 
@@ -122,8 +123,10 @@ python -W ignore scripts/analyze_coverage.py --suffix chunked_redeep --datasets 
 
 On Kaggle: `MODE = "techqa-smoke"`, then `"techqa"` (no input needed: GASP runs inside).
 
-- [ ] Kaggle: `MODE = "techqa"` completes (GASP + features, both models)
-- [ ] Dev: window1 vs max on real truncation; GASP / Lookback / ReDeEP on long contexts
+- [x] Kaggle: `MODE = "techqa"` completes (GASP + features, both models; ~3 h)
+- [x] Dev: max over windows beats window 1 by +0.06-0.07 (significant); best detector on TechQA
+
+`python scripts/cost_table.py` gives seconds per case for every detector (RQ3 cost).
 
 ## Credits
 
