@@ -7,8 +7,8 @@ the training folds only), and its ROC-AUC is reported overall and within subgrou
   prior       tertiles of S2 = no-context log-prob of the sentence (low / mid / high: "already known")
   position    tertiles of the sentence's relative position in the answer
   coverage    share of the context inside the 1800-token window (all / partly / mostly cut)
-Detectors: perplexity+length (base), S2 prior alone, GASP+base (S1), Lookback (S3), ReDeEP, and B
-(Lookback max over windows) where coverage-aware features exist. A subgroup is scored only with at
+Detectors: perplexity+length (base), S2 prior alone, GASP+base (S1), Lookback (S3), ReDeEP, frequency-aware
+attention (arXiv 2602.18145) where extracted, and B (Lookback max over windows) where coverage-aware features exist. A subgroup is scored only with at
 least 10 hallucinated and 10 grounded sentences.
 
 Usage:
@@ -65,6 +65,8 @@ def feature_sets(tag):
     rd = f / "features_redeep.npz" if (f / "features_redeep.npz").exists() else f / "features_chunked_redeep.npz"
     if rd.exists():
         out.append(("ReDeEP [cv]", rd, ("ecs", "pks"), True))
+    if (f / "features_freq.npz").exists():
+        out.append(("Frequency-aware [cv]", f / "features_freq.npz", ("freq",), True))
     return out
 
 

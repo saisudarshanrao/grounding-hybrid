@@ -38,8 +38,10 @@ CANON = ROOT / "results" / "gasp_repro" / "canon_results"
 FEAT = ROOT / "results" / "features"
 MODELS = {"Qwen2.5-1.5B-Instruct": "Qwen2.5-1.5B", "SmolLM2-1.7B-Instruct": "SmolLM2-1.7B"}
 COL = {"Perplexity+length": "#bbbbbb", "GASP+base (S1)": "#e69f00", "ReDeEP [cv]": "#cc79a7",
+       "Frequency-aware [cv]": "#56b4e9",
        "Lookback (S3)": "#0072b2", "B: Lookback max over windows": "#009e73", "S2 prior alone": "#999999"}
 SHORT = {"Perplexity+length": "Perplexity", "GASP+base (S1)": "GASP", "ReDeEP [cv]": "ReDeEP",
+         "Frequency-aware [cv]": "Freq-aware",
          "Lookback (S3)": "Lookback", "B: Lookback max over windows": "B (ours)", "S2 prior alone": "Prior"}
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
                      "xtick.labelsize": 7, "ytick.labelsize": 7, "axes.spines.top": False,
@@ -117,7 +119,9 @@ def fig1():
 def fig2():
     r = pd.read_csv(GATING / "rq2_where.csv")
     r = r[r.by == "all"]
-    dets = ["Perplexity+length", "GASP+base (S1)", "ReDeEP [cv]", "Lookback (S3)", "B: Lookback max over windows"]
+    dets = [d for d in ["Perplexity+length", "GASP+base (S1)", "ReDeEP [cv]", "Frequency-aware [cv]", "Lookback (S3)",
+                        "B: Lookback max over windows"] if d in set(r["detector"])]
+    w = 0.8 / len(dets)
     order = ["ragtruth", "tofueval", "ragbench", "techqa"]
     names = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA\n(long)"}
     fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.2), sharey=True)
@@ -126,7 +130,7 @@ def fig2():
         x = np.arange(len(order))
         for i, det in enumerate(dets):
             v = [sub[(sub.run == f"{short}_{ds}") & (sub.detector == det)]["auc"].mean() for ds in order]
-            ax.bar(x + (i - 2) * 0.16, v, 0.16, color=COL[det], edgecolor="k", lw=0.3, label=SHORT[det])
+            ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[det], edgecolor="k", lw=0.3, label=SHORT[det])
         ax.set_xticks(x, [names[d] for d in order])
         ax.set_ylim(0.45, 0.87)
         ax.axhline(0.5, color="k", lw=0.5, ls=":")
