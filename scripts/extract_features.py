@@ -11,7 +11,10 @@ Usage:
         --model Qwen/Qwen2.5-1.5B-Instruct
     python scripts/extract_features.py ... --max_cases 3     # quick Mac test
 
-Output: <outroot>/<TAG>/features.npz (+ meta.json), where TAG is the GASP run's folder name.
+Output: <outroot>/<TAG>/features.npz (+ meta.json), where TAG is the GASP run's folder name;
+features_chunked[_ctxN].npz with --chunked [--max_ctx_tokens N]. With a smaller window than GASP's
+(controlled truncation) the log-prob alignment check is expected to differ; coverage, token counts
+and NaN checks still gate the run.
 """
 import argparse
 import json
@@ -39,6 +42,8 @@ def main():
     ap.add_argument("--device", default=None)
     ap.add_argument("--dtype", default="float32", help="float16 makes Qwen2.5 eager attention overflow")
     ap.add_argument("--chunked", action="store_true", help="coverage-aware reading of the whole context")
+    ap.add_argument("--max_ctx_tokens", type=int, default=0, help="override GASP's window (controlled truncation)")
+    ap.add_argument("--overlap", type=int, default=256, help="token overlap between windows (chunked)")
     args = ap.parse_args()
 
     canon = Path(args.canon_dir)
@@ -46,7 +51,8 @@ def main():
     if not tag.startswith(args.model.split("/")[-1] + "_"):
         sys.exit(f"{tag} was not scored by {args.model}: sentence rows would not align")
     out_dir = Path(args.outroot) / tag
-    suffix = ("_chunked" if args.chunked else "") + (f"_first{args.max_cases}" if args.max_cases else "")
+    suffix = (("_chunked" if args.chunked else "") + (f"_ctx{args.max_ctx_tokens}" if args.max_ctx_tokens else "")
+              + (f"_first{args.max_cases}" if args.max_cases else ""))
     out_file = out_dir / f"features{suffix}.npz"
     if out_file.exists():
         print(f"[skip] {out_file} exists")
@@ -60,8 +66,8 @@ def main():
     cases = load_cases(canon)
     if args.max_cases:
         cases = cases[: args.max_cases]
-    ex = SharedExtractor(args.model, device=args.device, dtype=args.dtype,
-                         max_ctx_tokens=p["max_ctx_tokens"], max_ans_tokens=p["max_ans_tokens"])
+    ex = SharedExtractor(args.model, device=args.device, dtype=args.dtype, overlap=args.overlap,
+                         max_ctx_tokens=args.max_ctx_tokens or p["max_ctx_tokens"], max_ans_tokens=p["max_ans_tokens"])
     print(f"{tag}: {len(cases)} cases, {args.model} on {ex.device}, "
           f"{ex.n_layers} layers x {ex.n_heads} heads, {ex.dtype}", flush=True)
 
@@ -105,7 +111,7 @@ def main():
     print("alignment vs GASP sentence.csv:", check, flush=True)
 
     meta = dict(tag=tag, model=args.model, device=ex.device, dtype=ex.dtype, chunked=args.chunked,
-                overlap=ex.overlap, n_cases=len(cases),
+                max_ctx_tokens=ex.max_ctx, overlap=ex.overlap, n_cases=len(cases),
                 n_sentences=len(rows), n_layers=ex.n_layers, n_heads=ex.n_heads,
                 features={"lookback": "A_ctx/(A_ctx+A_new) per layer x head, mean over sentence tokens",
                           "logprob_full": "mean full-context token log-prob (= -GASP mean_surprisal)"},

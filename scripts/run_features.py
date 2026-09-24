@@ -11,6 +11,8 @@ Usage:
         --outroot /kaggle/working/results/features
     python scripts/run_features.py ... --smoke      # 20 cases per run, extraction only
     python scripts/run_features.py ... --chunked --datasets ragbench --no_eval   # coverage-aware
+    python scripts/run_features.py ... --chunked --max_ctx_tokens 512 --overlap 128 \
+        --datasets ragtruth tofueval          # controlled truncation
 """
 import argparse
 import os
@@ -45,6 +47,8 @@ def run_worker(model, args, cfg):
             cmd += ["--max_cases", "20"]
         if args.chunked:
             cmd += ["--chunked"]
+        if args.max_ctx_tokens:
+            cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)]
         if subprocess.run(cmd).returncode != 0:
             print(f"[error] extraction failed for {tag}", flush=True)
             continue
@@ -76,6 +80,8 @@ def main():
     ap.add_argument("--chunked", action="store_true", help="coverage-aware reading (extraction only)")
     ap.add_argument("--datasets", nargs="*", help="override the dataset list")
     ap.add_argument("--no_eval", action="store_true", help="extract only; evaluate on the Mac")
+    ap.add_argument("--max_ctx_tokens", type=int, default=0, help="controlled truncation window")
+    ap.add_argument("--overlap", type=int, default=256)
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     cfg = yaml.safe_load(open(args.config))
@@ -98,6 +104,7 @@ def main():
                "--outroot", args.outroot, "--config", args.config]
         cmd += (["--smoke"] if args.smoke else []) + (["--chunked"] if args.chunked else [])
         cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
+        cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)] if args.max_ctx_tokens else []
         short = model.split("/")[-1]
         p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         pump = threading.Thread(target=_pump, args=(p, log_dir / f"{short}.log", short))
