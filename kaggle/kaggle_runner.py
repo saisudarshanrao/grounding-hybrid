@@ -74,6 +74,30 @@ sh("pip install -q -r requirements.txt", cwd=REPO_DIR)
 sh("python scripts/env_check.py", cwd=REPO_DIR)
 sh("python scripts/setup_gasp.py", cwd=REPO_DIR)
 
+
+def prefetch_models(attempts=4, timeout=600):
+    """Download every scorer before any stage runs. A Hugging Face download can stall forever
+    ("Read timed out ... Trying to resume download..."), which would hang a background run until
+    Kaggle's 12 h limit; here a stalled attempt is killed after `timeout` s and resumed."""
+    import sys
+    import yaml
+    code = ("import sys; from huggingface_hub import snapshot_download; "
+            "print(snapshot_download(sys.argv[1], allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model']))")
+    for m in yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]:
+        for i in range(attempts):
+            try:
+                subprocess.run([sys.executable, "-c", code, m], check=True, timeout=timeout)
+                print(f"model ready: {m}", flush=True)
+                break
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+                print(f"download of {m} failed or stalled (attempt {i + 1}/{attempts}: {type(e).__name__}); "
+                      "retrying", flush=True)
+        else:
+            raise RuntimeError(f"could not download {m} after {attempts} attempts")
+
+
+prefetch_models()
+
 # 3. Run (resumable within the session)
 flag = "--smoke" if MODE.endswith("smoke") else ""
 if MODE in ("smoke", "full"):
