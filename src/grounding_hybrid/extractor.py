@@ -94,7 +94,8 @@ class SharedExtractor:
                 self._lookback[layer_idx] = a_ctx / (a_ctx + a_new)
                 if self._freq_on:                      # frequency-aware attention (window 1)
                     self._fq_ctx[layer_idx] = self._hf_norm(w[..., :P])     # heads x A
-                    self._fq_new[layer_idx] = w[..., P:]                    # heads x A x A (causal)
+                    # copy: a view would keep the whole T x T attention of every layer alive (GPU OOM)
+                    self._fq_new[layer_idx] = w[..., P:].clone()            # heads x A x A (causal)
                 if self._ctx is not None:              # ReDeEP: top-k% attended context tokens
                     c0, c1 = self._ctx
                     k = max(1, math.ceil(self.ecs_topk * (c1 - c0)))
