@@ -126,6 +126,14 @@ On Kaggle: `MODE = "techqa-smoke"`, then `"techqa"` (no input needed: GASP runs 
 - [x] Kaggle: `MODE = "techqa"` completes (GASP + features, both models; ~3 h)
 - [x] Dev: max over windows beats window 1 by +0.06-0.07 (significant); best detector on TechQA
 
+## Step 5: a second long-context set (ExpertQA-long)
+
+RAGBench ExpertQA, all splits, contexts of at least 9000 characters (100% longer than the window for
+both scorers): 466 cases. `--datasets expertqalong`; Kaggle `MODE = "expertqa-smoke"`, then `"expertqa"`.
+
+- [ ] Kaggle: `MODE = "expertqa"` completes
+- [ ] Dev: B vs window 1 on ExpertQA-long (decision rule in CLAUDE.md, fixed before the run)
+
 `python scripts/cost_table.py` gives seconds per case for every detector (RQ3 cost).
 
 ## Credits

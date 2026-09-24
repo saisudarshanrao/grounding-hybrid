@@ -22,6 +22,8 @@ MODE (set below):
   "techqa-smoke" / "techqa"        week 3b: real truncation. GASP's pipeline on a 600-case TechQA sample
                                    (RAGBench, all splits; both models in parallel, one per T4), then
                                    coverage-aware Lookback + ReDeEP features on it; evaluate on the Mac.
+  "expertqa-smoke" / "expertqa"    step 5: the same on ExpertQA-long (RAGBench ExpertQA, contexts
+                                   >= 9000 characters, 466 cases): a second real long-context set.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -33,7 +35,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features-smoke, features, chunked-smoke, chunked, trunc-smoke, trunc, redeep-smoke, redeep, techqa-smoke, techqa
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa (each also as -smoke)
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -88,7 +90,8 @@ elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-s
         MODE.replace("-smoke", ""), "")
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
-elif MODE in ("techqa-smoke", "techqa"):
+elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa"):
+    lds = {"techqa": "techqa", "expertqa": "expertqalong"}[MODE.replace("-smoke", "")]
     import torch
     import yaml
     models = yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]
@@ -96,12 +99,12 @@ elif MODE in ("techqa-smoke", "techqa"):
     procs = []                                 # GASP: one model per GPU, in parallel
     for i, m in enumerate(models):
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % max(torch.cuda.device_count(), 1)), PYTHONUNBUFFERED="1")
-        cmd = f"python scripts/reproduce_gasp.py --models {m} --datasets techqa {cap} --outroot {OUTROOT}/gasp_repro"
+        cmd = f"python scripts/reproduce_gasp.py --models {m} --datasets {lds} {cap} --outroot {OUTROOT}/gasp_repro"
         print("$", cmd, f"(GPU {env['CUDA_VISIBLE_DEVICES']})", flush=True)
         procs.append(subprocess.Popen(cmd, shell=True, cwd=REPO_DIR, env=env))
     if any(p.wait() for p in procs):
         raise RuntimeError("a GASP run failed; see the log above")
-    sh(f"python scripts/run_features.py {flag} --chunked --redeep --datasets techqa "
+    sh(f"python scripts/run_features.py {flag} --chunked --redeep --datasets {lds} "
        f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
 else:
     raise ValueError(f"unknown MODE {MODE!r}")

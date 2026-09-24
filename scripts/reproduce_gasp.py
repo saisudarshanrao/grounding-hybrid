@@ -6,6 +6,7 @@ Usage:
     python scripts/reproduce_gasp.py --models Qwen/Qwen2.5-1.5B-Instruct --datasets ragtruth
     python scripts/reproduce_gasp.py --dry-run        # print the commands without running them
     python scripts/reproduce_gasp.py --datasets techqa   # long-context RAGBench domain (gasp_longctx.py)
+    python scripts/reproduce_gasp.py --datasets expertqalong   # ExpertQA, contexts >= 9000 chars
 
 The run is resumable: a (model, dataset) pair whose sentence.csv already exists is skipped,
 so if a Kaggle session times out, just run the same command again.
@@ -27,7 +28,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 GASP_PIPE = ROOT / "third_party" / "GASP" / "pipeline"
-LONGCTX_DOMAINS = ("techqa",)   # one RAGBench domain, all splits, via scripts/gasp_longctx.py
+# long-context sets: one RAGBench domain, all splits, via scripts/gasp_longctx.py (name: its extra args)
+LONGCTX_DOMAINS = {"techqa": ["--domain", "techqa"],
+                   "expertqalong": ["--domain", "expertqa", "--min_ctx_chars", "9000"]}
 
 
 def tag_for(model, dataset, k):
@@ -106,7 +109,7 @@ def main():
 
             print(f"\n=== {tag} ===", flush=True)
             t0 = time.time()
-            entry = ([str(ROOT / "scripts" / "gasp_longctx.py"), "--domain", ds, "--dataset", "ragbench"]
+            entry = ([str(ROOT / "scripts" / "gasp_longctx.py")] + LONGCTX_DOMAINS[ds] + ["--dataset", "ragbench"]
                      if ds in LONGCTX_DOMAINS else [str(GASP_PIPE / "run_gasp.py"), "--dataset", ds])
             cmd = [sys.executable] + entry + ["--model", model,
                    "--k_chunks", str(p["k_chunks"]),
