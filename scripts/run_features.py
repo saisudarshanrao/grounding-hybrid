@@ -51,6 +51,8 @@ def run_worker(model, args, cfg):
             cmd += ["--chunked"]
         if args.redeep:
             cmd += ["--redeep"]
+        if args.freq:
+            cmd += ["--freq"]
         if args.max_ctx_tokens:
             cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)]
         if subprocess.run(cmd).returncode != 0:
@@ -58,7 +60,7 @@ def run_worker(model, args, cfg):
             failed.append(tag)
             continue
         out_dir = Path(args.outroot) / tag
-        if args.smoke or args.no_eval or args.chunked or args.redeep or (out_dir / "eval.json").exists():
+        if args.smoke or args.no_eval or args.chunked or args.redeep or args.freq or (out_dir / "eval.json").exists():
             continue
         r = subprocess.run([sys.executable, "-W", "ignore", str(ROOT / "scripts" / "eval_features.py"),
                             "--canon_dir", str(canon), "--features", str(out_dir / "features.npz")],
@@ -87,6 +89,7 @@ def main():
     ap.add_argument("--datasets", nargs="*", help="override the dataset list")
     ap.add_argument("--no_eval", action="store_true", help="extract only; evaluate on the Mac")
     ap.add_argument("--redeep", action="store_true", help="also extract ReDeEP scores (extraction only)")
+    ap.add_argument("--freq", action="store_true", help="also extract frequency-aware features (extraction only)")
     ap.add_argument("--max_ctx_tokens", type=int, default=0, help="controlled truncation window")
     ap.add_argument("--overlap", type=int, default=256)
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
@@ -111,6 +114,7 @@ def main():
                "--outroot", args.outroot, "--config", args.config]
         cmd += (["--smoke"] if args.smoke else []) + (["--chunked"] if args.chunked else [])
         cmd += ["--redeep"] if args.redeep else []
+        cmd += ["--freq"] if args.freq else []
         cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
         cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)] if args.max_ctx_tokens else []
         short = model.split("/")[-1]

@@ -26,6 +26,9 @@ scripts/coverage_checks.py   dev-only: pooled test + fixed-classifier mechanism 
 scripts/eval_redeep.py     ReDeEP baseline vs Lookback vs GASP (dev CV, or one --test look)
 scripts/gasp_longctx.py    GASP's unmodified pipeline on one long-context RAGBench domain (TechQA, all splits)
 scripts/cost_table.py      seconds per case for every detector, from the saved run timings
+scripts/evidence_position.py  dev-only: B's gain by where the evidence lies (RAGBench annotations)
+scripts/b2_check.py        dev-only: pre-registered test of variant B2 (rejected)
+scripts/freq_check.py      dev-only: frequency-aware attention baseline vs Lookback (pre-registered rule)
 kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks the run (GASP, features, chunked, trunc, redeep)
 src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
                            signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
@@ -131,8 +134,18 @@ On Kaggle: `MODE = "techqa-smoke"`, then `"techqa"` (no input needed: GASP runs 
 RAGBench ExpertQA, all splits, contexts of at least 9000 characters (100% longer than the window for
 both scorers): 466 cases. `--datasets expertqalong`; Kaggle `MODE = "expertqa-smoke"`, then `"expertqa"`.
 
-- [ ] Kaggle: `MODE = "expertqa"` completes
-- [ ] Dev: B vs window 1 on ExpertQA-long (decision rule in CLAUDE.md, fixed before the run)
+- [x] Kaggle: `MODE = "expertqa"` completes
+- [x] Dev: B vs window 1 on ExpertQA-long: positive but not significant (rule not met); B's gain is large where
+      the evidence lies beyond window 1 on both sets (`scripts/evidence_position.py`)
+
+## Step 7c: frequency-aware attention baseline
+
+Frequency-aware attention (arXiv 2602.18145, authors' cutoff 0.45) from the same single pass (`--freq`); checked
+against an authors-style reference implementation (difference 0.0).
+On Kaggle: `MODE = "freq-smoke"`, then `"freq"`; then `python -W ignore scripts/freq_check.py` on the Mac.
+
+- [ ] Kaggle: `MODE = "freq"` completes
+- [ ] Dev: FA vs Lookback (decision rule in CLAUDE.md, fixed before the run)
 
 `python scripts/cost_table.py` gives seconds per case for every detector (RQ3 cost).
 

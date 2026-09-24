@@ -24,12 +24,18 @@ ReDeEP scores (redeep=True; Sun et al., ICLR 2025), averaged over the sentence's
 Head and layer selection (ReDeEP's copying heads / knowledge FFNs) happens later, on training
 folds only, so every head and layer is kept here.
 
+Frequency-aware attention (freq=True; Qi et al., 2026, arXiv 2602.18145, as in the authors' code):
+  freq          [layers, heads, 2] for each answer token's attention row, separately over the prompt
+                (positions < P) and over the answer so far (P..p): FFT, keep the bins with
+                |fftfreq(N)| >= f_cutoff (0.45, the authors' default), inverse FFT (real part), L2
+                norm; averaged over the sentence's tokens. [..., 0] = context part, [..., 1] = answer part.
+
 Coverage-aware reading (chunked=True): the first window is exactly GASP's retained context, so
 `lookback` is unchanged; when the context is longer than max_ctx_tokens, further windows of the
 same size (overlapping by `overlap` tokens) cover the rest, one pass each with the same prompt
 and answer. Per sentence, lookback_max / lookback_mean combine the windows elementwise, so
 evidence beyond GASP's window is read too. Contexts that fit get identical values in all three.
-ReDeEP scores come from the first window only (the baseline sees what GASP sees).
+ReDeEP and frequency features come from the first window only (the baselines see what GASP sees).
 
 Runs in float32 by default on every device. Eager attention (needed to read the weights)
 overflows in float16 for Qwen2.5: every feature came out NaN on a T4, while GASP's own fp16
@@ -54,12 +60,13 @@ def default_device():
 
 class SharedExtractor:
     def __init__(self, model_id, device=None, dtype="float32", max_ctx_tokens=1800, max_ans_tokens=256,
-                 overlap=256, redeep=False, ecs_topk=0.1):
+                 overlap=256, redeep=False, ecs_topk=0.1, freq=False, f_cutoff=0.45):
         self.device = device or default_device()
         self.dtype = dtype
         self.model_id = model_id
         self.max_ctx, self.max_ans, self.overlap = max_ctx_tokens, max_ans_tokens, overlap
         self.redeep, self.ecs_topk = redeep, ecs_topk
+        self.freq, self.f_cutoff, self._freq_on, self._fq_ctx, self._fq_new = freq, f_cutoff, False, None, None
         self.tok = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, torch_dtype=getattr(torch, dtype), attn_implementation="eager").to(self.device).eval()
@@ -85,12 +92,21 @@ class SharedExtractor:
                 # causal mask: row P+i is zero past column P+i, so this sums columns P..P+i
                 a_new = w[..., P:].sum(-1) / torch.arange(1, w.shape[1] + 1, device=w.device)
                 self._lookback[layer_idx] = a_ctx / (a_ctx + a_new)
+                if self._freq_on:                      # frequency-aware attention (window 1)
+                    self._fq_ctx[layer_idx] = self._hf_norm(w[..., :P])     # heads x A
+                    self._fq_new[layer_idx] = w[..., P:]                    # heads x A x A (causal)
                 if self._ctx is not None:              # ReDeEP: top-k% attended context tokens
                     c0, c1 = self._ctx
                     k = max(1, math.ceil(self.ecs_topk * (c1 - c0)))
                     self._ecs_idx[layer_idx] = w[..., c0:c1].topk(k, dim=-1).indices + c0
             return (output[0], None) + tuple(output[2:])   # drop the weights immediately
         return hook
+
+    def _hf_norm(self, x):
+        """L2 norm of the high-pass part (|fftfreq| >= f_cutoff) of x along its last axis."""
+        n = x.shape[-1]
+        keep = torch.fft.fftfreq(n, device=x.device).abs() >= self.f_cutoff
+        return torch.fft.ifft(torch.fft.fft(x, dim=-1) * keep, dim=-1).real.norm(dim=-1)
 
     def _mid_hook(self, layer_idx):
         def hook(module, args):
@@ -157,12 +173,16 @@ class SharedExtractor:
         pos = [i for i, (s, e) in enumerate(enc["offset_mapping"]) if e > s and CTX_START <= s < CTX_START + len(ctx)]
         return (pos[0], pos[-1] + 1) if pos else None
 
-    def _pass(self, pid, aid, ctx_range=None):
+    def _pass(self, pid, aid, ctx_range=None, first=True):
         """One forward pass: answer-token log-probs and Lookback ratios (layers x heads x A);
-        with ctx_range (ReDeEP) also ECS (layers x heads x A) and PKS (layers x A)."""
+        with ctx_range (ReDeEP) also ECS (layers x heads x A) and PKS (layers x A); with freq on the
+        first window, frequency features (layers x heads x A x 2)."""
         P, A = len(pid), len(aid)
         ids = torch.tensor([pid + aid], device=self.device)
         self._P, self._A, self._lookback = P, A, [None] * self.n_layers
+        self._freq_on = self.freq and first
+        if self._freq_on:
+            self._fq_ctx, self._fq_new = [None] * self.n_layers, [None] * self.n_layers
         self._ctx = ctx_range if self.redeep else None
         if self._ctx is not None:
             self._ecs_idx, self._mid, self._pks = [None] * self.n_layers, [None] * self.n_layers, [None] * self.n_layers
@@ -174,8 +194,14 @@ class SharedExtractor:
         tlp = lp[torch.arange(A, device=self.device), ids[0, P:]].cpu().numpy()
         lb = torch.stack(self._lookback).cpu().numpy()
         self._lookback = None
+        fq = None
+        if self._freq_on:
+            new = torch.stack(self._fq_new)                                # L x H x A x A
+            fq_new = torch.stack([self._hf_norm(new[:, :, i, :i + 1]) for i in range(A)], dim=-1)
+            fq = torch.stack([torch.stack(self._fq_ctx), fq_new], dim=-1).cpu().numpy()   # L x H x A x 2
+            self._fq_ctx, self._fq_new, self._freq_on = None, None, False
         if self._ctx is None:
-            return tlp, lb, None, None
+            return tlp, lb, None, None, fq
         X = self._xl                                   # T x d
         xa = F.normalize(X[P:P + A], dim=-1)           # A x d
         ecs = []
@@ -188,7 +214,7 @@ class SharedExtractor:
         ecs = torch.stack(ecs).cpu().numpy()
         pks = torch.stack(self._pks).cpu().numpy()
         self._ctx, self._ecs_idx, self._mid, self._pks, self._xl = None, None, None, None, None
-        return tlp, lb, ecs, pks
+        return tlp, lb, ecs, pks, fq
 
     @torch.no_grad()
     def extract(self, case, chunked=False):
@@ -202,9 +228,12 @@ class SharedExtractor:
             coffs = self.tok(case.context, add_special_tokens=False, return_offsets_mapping=True)["offset_mapping"]
             ctx_ret = coffs[self.max_ctx - 1][1] if len(coffs) >= self.max_ctx else len(case.context)
             rng = self.context_range(case.context[:ctx_ret], case.query, pid)
-        tlp, lb, ecs, pks = self._pass(pid, aid, rng)
+        tlp, lb, ecs, pks, fq = self._pass(pid, aid, rng)
         out = [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()),
                     lookback=lb[:, :, tk].mean(-1)) for j, tk in sents]
+        if fq is not None:
+            for r, (_, tk) in zip(out, sents):
+                r.update(freq=fq[:, :, tk, :].mean(2))
         if ecs is not None:
             for r, (_, tk) in zip(out, sents):
                 r.update(ecs=ecs[:, :, tk].mean(-1), pks=pks[:, tk].mean(-1))
@@ -216,7 +245,7 @@ class SharedExtractor:
             spans = self.windows(case)
             for cs, ce in spans[1:]:
                 pw = self.tok(PROMPT.format(ctx=case.context[cs:ce], query=case.query)).input_ids
-                _, lbw, _, _ = self._pass(pw, aid)
+                _, lbw, _, _, _ = self._pass(pw, aid, first=False)
                 for k, (_, tk) in enumerate(sents):
                     per_window[k].append(lbw[:, :, tk].mean(-1))
             for r, ws in zip(out, per_window):
