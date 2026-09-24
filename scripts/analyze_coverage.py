@@ -7,8 +7,17 @@ contexts, and per task:
   max/mean  ratios combined over all windows (coverage-aware reading)
   full      the 1800-token single-pass features (features.npz): for the controlled-truncation
             runs this sees the whole context, so it is the upper bound
-For the truncated rows it adds a source-level paired bootstrap CI for (max or mean) - window1 and
-the share of the window1 -> full gap that the windowed reading recovers.
+  len       log context length (characters, GASP's audit) alone. A control: Lookback's context
+            term is a mean over the context tokens, so max/mean/full can pick up the context's
+            length, which window1 cannot see on truncated rows
+  w1+len    window1 plus log context length
+Two checks come first: on fully visible rows window1 and the 1800-token features must be identical
+(both passes read the same tokens), and "full" is an upper bound only where the 1800-token window
+kept the whole context (GASP's audit ctx_kept). For the truncated rows it then adds source-level
+paired bootstrap CIs, all from one set of draws: the gain (max or mean) - window1 with the share of
+the window1 -> full gap it recovers, the gain over w1+len, and, in the controlled-truncation runs
+(where full reads more than window1), the truncation loss full - window1 and what is still missing
+(full - max or mean) with a CI for the share of the loss recovered.
 
 Usage:
     python scripts/analyze_coverage.py                                   # RAGBench, 1800-token windows
@@ -43,18 +52,22 @@ def auc(g, col):
     return roc_auc_score(g["label"], g[col]) if g["label"].nunique() == 2 and g["label"].sum() >= 10 else np.nan
 
 
-def paired_ci(d, a, b, n=2000, seed=0):
-    """Source-level paired bootstrap of AUC(a) - AUC(b) on the rows of d."""
+def boot_aucs(d, cols, n=2000, seed=0):
+    """Source-level paired bootstrap on the rows of d: the AUC of every column, one row per draw."""
     rng, srcs = np.random.default_rng(seed), d["source_id"].unique()
     pos = {s: np.where(d["source_id"].values == s)[0] for s in srcs}
-    diffs = []
+    draws = []
     for _ in range(n):
         idx = np.concatenate([pos[s] for s in rng.choice(srcs, len(srcs), replace=True)])
         y = d["label"].values[idx]
         if y.min() != y.max():
-            diffs.append(roc_auc_score(y, d[a].values[idx]) - roc_auc_score(y, d[b].values[idx]))
+            draws.append([roc_auc_score(y, d[c].values[idx]) for c in cols])
+    return pd.DataFrame(draws, columns=cols)
+
+
+def ci(diffs):
     lo, hi = np.percentile(diffs, [2.5, 97.5])
-    return float(np.mean(diffs)), float(lo), float(hi)
+    return f"{np.mean(diffs):+.3f}  95% CI [{lo:+.3f}, {hi:+.3f}] {'SIGNIFICANT' if lo > 0 or hi < 0 else 'n.s.'}"
 
 
 def main():
@@ -71,6 +84,7 @@ def main():
         if not feat.exists():
             continue
         z = np.load(feat)
+        zi = {k: i for i, k in enumerate(zip(z["case_id"], z["sent_idx"]))}
         full = ROOT / "results" / "features" / canon.name / "features.npz"
         todo = list(VARIANTS.items()) + ([("full", ("lookback",))] if full.exists() else [])
         dev = None
@@ -78,11 +92,16 @@ def main():
             df, lb_cols = load_signals(canon, full if name == "full" else feat, lb_keys=keys)
             d, _test = analyze_gasp.source_split(df, seed=0)
             if dev is None:
-                dev = d[["case_id", "sent_idx", "label", "source_id", "task"]].copy()
-                nwin = dict(zip(zip(z["case_id"], z["sent_idx"]), z["n_windows"]))
-                dev["truncated"] = [nwin[(c, s)] > 1 for c, s in zip(dev["case_id"], dev["sent_idx"])]
+                dev = d[["case_id", "sent_idx", "label", "source_id", "task", "ctx_kept"]].copy()
+                nwin = z["n_windows"]
+                dev["truncated"] = [nwin[zi[k]] > 1 for k in zip(dev["case_id"], dev["sent_idx"])]
+                chars = pd.read_csv(canon / "audit.csv").set_index("case_id")["ctx_chars"]
+                d["log_len"] = np.log1p(d["case_id"].map(chars).to_numpy(float))
+                dev["len"], dev["w1+len"] = oof(d, ["log_len"]), oof(d, lb_cols + ["log_len"])
+            assert (d["case_id"].values == dev["case_id"].values).all() and \
+                (d["sent_idx"].values == dev["sent_idx"].values).all(), "dev rows differ between variants"
             dev[name] = oof(d, lb_cols)
-        cols = [c for c in ["window1", "max", "mean", "full"] if c in dev]
+        cols = [c for c in ["window1", "max", "mean", "full", "len", "w1+len"] if c in dev]
         groups = [("ALL dev", dev), ("truncated (>1 window)", dev[dev.truncated]),
                   ("fully visible", dev[~dev.truncated])] + list(dev.groupby("task"))
         rows = [dict(group=g, n=len(x), halluc=x["label"].mean(), **{v: auc(x, v) for v in cols})
@@ -90,14 +109,39 @@ def main():
         print(f"\n# {canon.name} [{args.suffix}]: dev-only S3 AUC by Lookback variant")
         print(pd.DataFrame(rows).to_string(index=False, float_format=fmt))
         tr = dev[dev.truncated]
+        # "full" is a longer reading only in the controlled-truncation runs; in 1800-token runs it is window1
+        longer = "full" in dev and not np.allclose(tr["full"], tr["window1"])
+        if full.exists():
+            zf = np.load(full)
+            zfi = {k: i for i, k in enumerate(zip(zf["case_id"], zf["sent_idx"]))}
+            vis = list(zip(dev["case_id"][~dev.truncated], dev["sent_idx"][~dev.truncated]))
+            if vis:
+                w1 = z["lookback"][[zi[k] for k in vis]].astype(np.float32)
+                f1800 = zf["lookback"][[zfi[k] for k in vis]].astype(np.float32)
+                print(f"  check: fully visible rows, window1 vs 1800-token features: max |diff| "
+                      f"{np.abs(w1 - f1800).max():.4f} (~0 expected: both passes read the same tokens)")
+        if longer:
+            print(f"  check: truncated rows the 1800-token window also cut (full is no upper bound there): "
+                  f"{int((tr['ctx_kept'] < 1).sum())} of {len(tr)}")
         if tr["label"].nunique() == 2:
+            b = boot_aucs(tr, cols)
+            head = f"  truncated rows ({len(tr)} / {tr['source_id'].nunique()} sources): "
+            gap = auc(tr, "full") - auc(tr, "window1") if "full" in dev else np.nan
             for v in ("max", "mean"):
-                m, lo, hi = paired_ci(tr, v, "window1")
-                gap = auc(tr, "full") - auc(tr, "window1") if "full" in dev else np.nan
                 rec = (auc(tr, v) - auc(tr, "window1")) / gap if gap == gap and abs(gap) > 1e-3 else np.nan
-                print(f"  truncated rows ({len(tr)} / {tr['source_id'].nunique()} sources): {v} - window1 = "
-                      f"{m:+.3f}  95% CI [{lo:+.3f}, {hi:+.3f}] {'SIGNIFICANT' if lo > 0 or hi < 0 else 'n.s.'}"
+                print(head + f"{v} - window1 = {ci(b[v] - b['window1'])}"
                       + (f" | recovers {rec:.0%} of the window1 -> full gap ({gap:+.3f})" if rec == rec else ""))
+            if longer:
+                loss = b["full"] - b["window1"]
+                print(head + f"full - window1 = {ci(loss)}  <- truncation loss")
+                for v in ("max", "mean"):
+                    share = ""
+                    if np.percentile(loss, 2.5) > 0:   # a share of the loss only means something if there is one
+                        lo, hi = np.nanpercentile((b[v] - b["window1"]) / loss, [2.5, 97.5])
+                        share = f" | share recovered 95% CI [{lo:.0%}, {hi:.0%}]"
+                    print(head + f"full - {v} = {ci(b['full'] - b[v])}  <- still missing" + share)
+            for v in ("max", "mean"):
+                print(head + f"{v} - w1+len = {ci(b[v] - b['w1+len'])}  <- gain beyond context length")
 
 
 if __name__ == "__main__":
