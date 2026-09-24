@@ -232,7 +232,9 @@ def main():
     if table:
         print("\n# Summary: " + ("TEST" if args.test else "DEV CV") + f" {args.level}-level AUC")
         print(pd.DataFrame(table).to_string(float_format=lambda x: f"{x:.3f}"))
-    out = ROOT / "results" / "gating" / f"redeep_{'test' if args.test else 'dev_cv'}_{args.level}.json"
+    extra = (f"_{args.runs}" if args.runs else "") + ("" if args.features_name == "features_redeep.npz"
+                                                      else "_" + Path(args.features_name).stem)
+    out = ROOT / "results" / "gating" / f"redeep{extra}_{'test' if args.test else 'dev_cv'}_{args.level}.json"
     json.dump(results, open(out, "w"), indent=1, default=float)
     print(f"saved {out}")
 
