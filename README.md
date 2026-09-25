@@ -33,6 +33,8 @@ src/grounding_hybrid/
                              windowed max/mean, ReDeEP ECS/PKS, frequency-aware attention
   signals.py                 joins features to GASP's sentence.csv by (case_id, sent_idx)
   gating.py                  grouped CV folds; prior-gating variants (tested and rejected)
+  longpass.py                baseline L: one long pass with memory-efficient attention, recomputing only the
+                             answer rows of attention (for contexts that do not fit eager attention)
 
 scripts/ -- pipeline
   env_check.py               device and versions
@@ -41,6 +43,8 @@ scripts/ -- pipeline
   gasp_longctx.py            GASP's pipeline on one long-context RAGBench domain (TechQA, ExpertQA-long)
   extract_features.py        features for one GASP run (--chunked, --redeep, --freq, --max_ctx_tokens)
   run_features.py            all models x datasets, one GPU per model
+  extract_long.py            baseline L features for one GASP run (one pass over as much context as the model allows)
+  longpass_check.py          checks for baseline L: recomputed answer rows = eager weights; window 1 = frozen extractor
 
 scripts/ -- the test look, figures, bookkeeping
   test_look.py               every frozen detector, fit on dev, scored once on test (--eval_on devhalf = dry run)
@@ -84,6 +88,7 @@ The runner clones this repository, so every run uses exactly the pushed code.
 | `techqa` | GASP + windowed Lookback + ReDeEP on TechQA (`features_chunked_redeep.npz`) | - |
 | `expertqa` | the same on ExpertQA-long | - |
 | `longfreq` | frequency-aware attention on TechQA + ExpertQA-long | - |
+| `longpass` | baseline L (one long pass) on TechQA + ExpertQA-long; the smoke runs its checks first | - |
 
 "`full` output" = the `results/gasp_repro/canon_results` folder of a `full` run, attached to the notebook as input
 (for example as a private Kaggle dataset); the runner finds it automatically. GASP's sampling and scoring are

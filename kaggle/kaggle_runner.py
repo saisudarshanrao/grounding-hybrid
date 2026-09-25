@@ -29,6 +29,9 @@ MODE (set below):
   "longfreq-smoke" / "longfreq"    step 7d: frequency-aware attention on TechQA + ExpertQA-long: GASP's
                                    deterministic sampling/scoring again (to rebuild the same cases), then
                                    one --freq pass per case (window 1); evaluate on the Mac.
+  "longpass-smoke" / "longpass"    step E1: baseline L, one long pass per response over as much context as the
+                                   scorer allows (SDPA + answer-row attention), TechQA + ExpertQA-long; GASP
+                                   reruns to rebuild the cases. The smoke runs the E1 checks (a) and (b) first.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -40,7 +43,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq (each also as -smoke)
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass (+ -smoke)
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -119,10 +122,11 @@ elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-s
         MODE.replace("-smoke", ""), "")
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
-elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-smoke", "longfreq"):
-    lds = {"techqa": "techqa", "expertqa": "expertqalong",
-           "longfreq": "techqa expertqalong"}[MODE.replace("-smoke", "")]
-    feat_flags = "--freq" if MODE.startswith("longfreq") else "--chunked --redeep"
+elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-smoke", "longfreq",
+              "longpass-smoke", "longpass"):
+    lds = {"techqa": "techqa", "expertqa": "expertqalong", "longfreq": "techqa expertqalong",
+           "longpass": "techqa expertqalong"}[MODE.replace("-smoke", "")]
+    feat_flags = {"longfreq": "--freq", "longpass": "--long"}.get(MODE.replace("-smoke", ""), "--chunked --redeep")
     import torch
     import yaml
     models = yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]
