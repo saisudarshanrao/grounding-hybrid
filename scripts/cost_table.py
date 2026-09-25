@@ -7,6 +7,8 @@ Seconds per case on one Kaggle T4, per scorer and dataset:
   Lookback    features.npz run: one fp32 eager pass per case (attention weights needed).
   +ReDeEP     features_redeep.npz run: the same pass plus the logit lens (2 x layers x vocabulary
               projections over the answer tokens) and the ECS gathers.
+  +FA         features_freq.npz run: the same pass plus an FFT of every answer token's attention row
+              (frequency-aware attention, arXiv 2602.18145).
   B windows   features_chunked*.npz runs: one fp32 eager pass per context window.
 Feature-run timings cover the extraction loop only (model loading excluded). Classifiers cost
 milliseconds on a CPU and are left out.
@@ -22,7 +24,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 FEATS = {"features": "Lookback (1 pass, fp32 eager)", "features_redeep": "Lookback + ReDeEP (1 pass + logit lens)",
          "features_chunked": "B: windows of 1800 (RAGBench)", "features_chunked_ctx512": "B: windows of 512 (controlled)",
-         "features_chunked_redeep": "B windows 1800 + ReDeEP (TechQA)"}
+         "features_chunked_redeep": "B windows 1800 + ReDeEP (long sets)",
+         "features_freq": "Lookback + frequency-aware (1 pass + FFT)"}
 
 
 def main():

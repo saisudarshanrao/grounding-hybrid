@@ -1,159 +1,126 @@
 # grounding-hybrid
 
-Prior-aware hybrid detection of RAG hallucinations with small open models.
+Coverage-aware attention reading for detecting RAG hallucinations with small open models.
 
-**Goal.** Context-removal detectors such as GASP fail when the scorer model already knows the
-answer (short-answer QA). We combine signed context sensitivity, the model's no-context prior,
-and evidence-reading attention, gated by the prior, and compare against GASP, Lookback Lens,
-ReDeEP and perplexity under one leakage-clean protocol. All signals are extracted from one
-shared full-context pass plus GASP's perturbation passes.
+**Question.** Detectors that read a scorer model's internals (context removal like GASP, attention reading like
+Lookback Lens) only see the part of the retrieved context that fits in the scorer's window. When the evidence lies
+beyond it, they judge a faithful sentence against the wrong text. We measure how much this costs and test a simple
+fix, under one leakage-clean protocol (GASP's source-level split) with 1.5-1.7B scorers on free T4 GPUs.
+
+**Method (B).** Read the whole context in windows of 1800 tokens (overlap 256; window 1 is exactly GASP's
+retained context), with the answer held fixed. For each (layer, head), compute Lookback Lens' ratio
+A_ctx / (A_ctx + A_new) per window and keep the maximum over windows. A logistic regression on these features
+(C tuned by grouped 5-fold CV on the dev split) gives the sentence score.
+
+**Compared under the same protocol.** Perplexity + length; GASP (its own classifier); Lookback Lens; ReDeEP
+(training-free and regression forms); frequency-aware attention (arXiv 2602.18145). Scorers: Qwen2.5-1.5B-Instruct
+and SmolLM2-1.7B-Instruct. Datasets: RAGTruth, TofuEval, RAGBench (GASP's samples), TechQA (600 cases) and
+ExpertQA-long (466 cases, contexts of at least 9000 characters) from RAGBench, and a controlled truncation study
+(512-token windows on RAGTruth and TofuEval, the full view as upper bound).
+
+**Protocol.** Every design choice was made on GASP's dev split (grouped CV by source). The method, baselines,
+datasets and metrics were then frozen and every detector was scored once on GASP's test split
+(`scripts/test_look.py`). Differences use GASP's paired source-level bootstrap (2000 resamples).
 
 ## Structure
 
 ```
-configs/reproduce.yaml     settings, pinned GASP commit, published reference numbers
-scripts/env_check.py       prints the device (cuda / mps / cpu) and versions
-scripts/setup_gasp.py      fetches GASP (pinned) + TofuEval label files into third_party/
-scripts/reproduce_gasp.py  runs GASP's own pipeline for each model x dataset (resumable)
-scripts/mac_smoke_test.py  runs GASP on one toy example; shows the known-answer failure
-scripts/extract_features.py  shared single-pass features (Lookback Lens) for one GASP run
-scripts/eval_features.py   scores features under GASP's exact split/classifier/bootstrap
-scripts/run_features.py    all models x datasets, one GPU per model in parallel
-scripts/analyze_prior.py   dev-only check: GASP / Lookback AUC by prior (S2) bins and domain
-scripts/eval_gating.py     dev-only grouped CV of gating variants (span or response level)
-scripts/analyze_coverage.py  dev-only: does coverage-aware (windowed) reading fix truncation?
-scripts/coverage_checks.py   dev-only: pooled test + fixed-classifier mechanism check for windowed reading
-scripts/eval_redeep.py     ReDeEP baseline vs Lookback vs GASP (dev CV, or one --test look)
-scripts/gasp_longctx.py    GASP's unmodified pipeline on one long-context RAGBench domain (TechQA, all splits)
-scripts/cost_table.py      seconds per case for every detector, from the saved run timings
-scripts/evidence_position.py  dev-only: B's gain by where the evidence lies (RAGBench annotations)
-scripts/b2_check.py        dev-only: pre-registered test of variant B2 (rejected)
-scripts/freq_check.py      dev-only: frequency-aware attention baseline vs Lookback (pre-registered rule)
-kaggle/kaggle_runner.py    paste into one Kaggle cell; MODE picks the run (GASP, features, chunked, trunc, redeep)
-src/grounding_hybrid/      gasp_bridge.py (GASP protocol, unmodified), extractor.py (hooks),
-                           signals.py (S1 signed sensitivity, S2 prior, S3 Lookback),
-                           gating.py (combined / soft / hard gates, dev-only CV)
+configs/reproduce.yaml       settings, pinned GASP commit, published reference numbers
+kaggle/kaggle_runner.py      one Kaggle cell; MODE picks the run (see "Reproduce" below)
+src/grounding_hybrid/
+  gasp_bridge.py             GASP's protocol, imported unmodified (split, classifier, bootstrap)
+  extractor.py               one fp32 pass per case (or per window) with attention hooks: Lookback ratios,
+                             windowed max/mean, ReDeEP ECS/PKS, frequency-aware attention
+  signals.py                 joins features to GASP's sentence.csv by (case_id, sent_idx)
+  gating.py                  grouped CV folds; prior-gating variants (tested and rejected)
+
+scripts/ -- pipeline
+  env_check.py               device and versions
+  setup_gasp.py              fetches GASP (pinned) + TofuEval labels into third_party/
+  reproduce_gasp.py          GASP's own pipeline per model x dataset (resumable)
+  gasp_longctx.py            GASP's pipeline on one long-context RAGBench domain (TechQA, ExpertQA-long)
+  extract_features.py        features for one GASP run (--chunked, --redeep, --freq, --max_ctx_tokens)
+  run_features.py            all models x datasets, one GPU per model
+
+scripts/ -- the test look, figures, bookkeeping
+  test_look.py               every frozen detector, fit on dev, scored once on test (--eval_on devhalf = dry run)
+  make_figures.py            dev figures; --test draws the main figures from the test look's saved scores
+  cost_table.py              seconds per case for every detector, from saved run timings
+  provenance.py              which Kaggle run made each result file; row alignment and cross-run checks
+
+scripts/ -- dev-only analyses (grouped CV on the dev split; never touch test)
+  eval_features.py           Lookback vs GASP under GASP's split and classifier
+  eval_redeep.py             ReDeEP vs Lookback vs GASP
+  analyze_prior.py           detector AUC by the no-context prior (the "already known" premise)
+  eval_gating.py             prior-gating variants (rejected)
+  analyze_coverage.py        windowed reading vs window 1 (TechQA, controlled truncation)
+  coverage_checks.py         pooled tests and a fixed-classifier mechanism check for windowed reading
+  evidence_position.py       B's gain by where RAGBench's annotated evidence lies
+  b2_check.py                variant B2 = [window 1, max] (rejected)
+  freq_check.py              frequency-aware attention vs Lookback
+  rq2_where.py               every detector by dataset, domain, prior and position
+  robustness_cv.py           stability of the key comparisons over CV fold assignments
+  ablation_layers.py         which layers and heads carry the Lookback signal
+  mac_smoke_test.py          GASP on one toy example (Mac check)
 ```
 
-`third_party/` and `results/` are not committed; scripts recreate them.
+`third_party/` and `results/` are not committed; the scripts recreate them.
 
-## Workflow: Mac -> GitHub -> Kaggle -> Mac
+## Reproduce
 
-1. **Edit and test on the Mac**, then push:
-   ```bash
-   git add -A && git commit -m "describe the change" && git push
-   ```
-2. **Run on Kaggle**: paste `kaggle/kaggle_runner.py` into a notebook cell and run it.
-   It clones the latest commit, so every run uses exactly the code you pushed.
-3. **Download results** from the notebook's Output tab to the Mac for analysis.
+Heavy runs (GASP, feature extraction) run on Kaggle (GPU T4 x2, Internet on); analysis runs anywhere.
+Paste `kaggle/kaggle_runner.py` into one notebook cell (or a short loader that fetches it from this repository),
+set `MODE`, run the `-smoke` variant first, then the full one via Save Version > Save & Run All.
+The runner clones this repository, so every run uses exactly the pushed code.
 
-Final reported numbers always come from Kaggle runs; the Mac is for development and analysis.
+| MODE | Produces | Input needed |
+|---|---|---|
+| `full` | GASP on RAGTruth, TofuEval, RAGBench, both scorers (`results/gasp_repro/canon_results`) | - |
+| `features` | Lookback features (`features.npz`) | `full` output |
+| `chunked` | windowed Lookback on RAGBench (`features_chunked.npz`) | `full` output |
+| `trunc` | controlled truncation, 512/128 windows (`features_chunked_ctx512.npz`) | `full` output |
+| `redeep` | ReDeEP ECS/PKS + Lookback (`features_redeep.npz`) | `full` output |
+| `freq` | frequency-aware attention + Lookback (`features_freq.npz`) | `full` output |
+| `techqa` | GASP + windowed Lookback + ReDeEP on TechQA (`features_chunked_redeep.npz`) | - |
+| `expertqa` | the same on ExpertQA-long | - |
+| `longfreq` | frequency-aware attention on TechQA + ExpertQA-long | - |
 
-## One-time Mac setup
+"`full` output" = the `results/gasp_repro/canon_results` folder of a `full` run, attached to the notebook as input
+(for example as a private Kaggle dataset); the runner finds it automatically. GASP's sampling and scoring are
+deterministic: reruns give byte-identical `sentence.csv` files.
+
+Download each run's `results/` into this folder, then:
 
 ```bash
-# Apple Silicon Python environment (macOS's own python3 is 3.9, too old for current torch)
+python scripts/provenance.py                               # every file lines up with GASP's rows
+python -W ignore scripts/test_look.py --eval_on devhalf    # dry run on dev halves (never touches test)
+python -W ignore scripts/test_look.py --eval_on test       # the single test look -> results/test/
+python -W ignore scripts/make_figures.py --test            # main figures from results/test/
+python -W ignore scripts/make_figures.py                   # dev diagnostics (layers, prior)
+python scripts/cost_table.py                               # compute cost per detector
+```
+
+## Setup (Mac, for development and analysis)
+
+```bash
 brew install python@3.11
 /opt/homebrew/bin/python3.11 -m venv .venv
-echo 'export PYTORCH_ENABLE_MPS_FALLBACK=1' >> .venv/bin/activate   # set on every activate
+echo 'export PYTORCH_ENABLE_MPS_FALLBACK=1' >> .venv/bin/activate
 source .venv/bin/activate
 pip install torch
 pip install -r requirements.txt
 
-python scripts/env_check.py              # should say: Apple MPS available
+python scripts/env_check.py              # device and versions
 python scripts/setup_gasp.py             # fetch GASP + TofuEval
 python scripts/mac_smoke_test.py         # toy example with Qwen2.5-0.5B
 ```
 
-## Week 1 checklist
-
-- [x] Mac: environment works, `mac_smoke_test.py` prints three sensitivity scores
-- [x] Kaggle: `MODE = "smoke"` run completes
-- [x] Kaggle: `MODE = "full"` run completes for both models on RAGTruth
-- [x] RAGTruth span AUCs within about +/-0.02 of `reference_ragtruth_span_auc` in the config (exact match, diff 0.000)
-- [x] RAGBench and TofuEval runs complete for Qwen2.5-1.5B (our target regime is RAGBench)
-
-## Week 2: shared extractor, Lookback Lens first
-
-One full-context forward pass per case on exactly the tokens GASP scored; attention is
-reduced to Lookback ratios inside forward hooks and never stored. Features join GASP's
-`sentence.csv` by `(case_id, sent_idx)`, so GASP's own source-level split is reused unchanged.
-
-```bash
-# Mac check on a few cases (alignment vs GASP must show covered == gasp_rows, diff ~0.001)
-python scripts/extract_features.py --canon_dir results/gasp_repro/canon_results/Qwen2.5-1.5B-Instruct_ragtruth_K5 \
-    --model Qwen/Qwen2.5-1.5B-Instruct --max_cases 5
-```
-
-On Kaggle: attach the week 1 notebook output as input, set `MODE = "features-smoke"`, then `"features"`.
-
-- [x] Extractor aligned with GASP on the Mac: every sentence covered, log-probs within ~0.001
-- [x] Evaluation reproduces GASP's week 1 numbers exactly; random features score ~0.5
-- [x] Kaggle: `MODE = "features"` completes for both models x 3 datasets
-- [x] Lookback Lens span/response AUC vs GASP on RAGTruth, TofuEval, RAGBench (Lookback wins everywhere)
-- [x] Dev-only gating comparison: no gate beats Lookback alone or the plain combination
-- [x] Coverage-aware reading (`MODE = "chunked"`) on RAGBench: TechQA direction right but n.s. (31 dev sources)
-- [x] Controlled truncation (`MODE = "trunc"`, 512-token windows, RAGTruth + TofuEval): max over windows
-      recovers ~70% of the truncation loss (pooled, significant); fixed-classifier check confirms (dev only)
-
-## Week 3: ReDeEP baseline
-
-ReDeEP's ECS (per head) and PKS (per layer) come from the same single pass (`--redeep`); head/layer
-selection and weights are chosen on training folds only.
+Quick feature check on a few cases (alignment must show `covered == gasp_rows`, log-prob difference ~0.001):
 
 ```bash
 python scripts/extract_features.py --canon_dir results/gasp_repro/canon_results/Qwen2.5-1.5B-Instruct_ragtruth_K5 \
-    --model Qwen/Qwen2.5-1.5B-Instruct --redeep --max_cases 3       # quick Mac check
-python -W ignore scripts/eval_redeep.py                              # dev CV, after the Kaggle run
+    --model Qwen/Qwen2.5-1.5B-Instruct --chunked --max_cases 5
 ```
-
-On Kaggle: `MODE = "redeep-smoke"`, then `"redeep"`; download the output and evaluate on the Mac.
-
-- [x] Kaggle: `MODE = "redeep"` completes for both models x 3 datasets (lookback equals Week 2's exactly)
-- [x] Dev CV: Lookback > ReDeEP [cv] >= GASP ~ training-free ReDeEP (test look after the method freeze)
-
-## Week 3b: coverage-aware reading on real truncation (TechQA)
-
-GASP's RAGBench sample holds only 49 TechQA cases. `--datasets techqa` draws GASP's balanced
-sample (300/class, seed 42) from TechQA alone, pooled over all RAGBench splits: 600 cases, 502
-sources, 97% of contexts longer than the 1800-token window. GASP's own code scores it; then one
-pass extracts coverage-aware Lookback + ReDeEP features.
-
-```bash
-python scripts/reproduce_gasp.py --models Qwen/Qwen2.5-0.5B-Instruct --datasets techqa --max_cases 3   # Mac check
-python -W ignore scripts/analyze_coverage.py --suffix chunked_redeep --datasets techqa             # after Kaggle
-```
-
-On Kaggle: `MODE = "techqa-smoke"`, then `"techqa"` (no input needed: GASP runs inside).
-
-- [x] Kaggle: `MODE = "techqa"` completes (GASP + features, both models; ~3 h)
-- [x] Dev: max over windows beats window 1 by +0.06-0.07 (significant); best detector on TechQA
-
-## Step 5: a second long-context set (ExpertQA-long)
-
-RAGBench ExpertQA, all splits, contexts of at least 9000 characters (100% longer than the window for
-both scorers): 466 cases. `--datasets expertqalong`; Kaggle `MODE = "expertqa-smoke"`, then `"expertqa"`.
-
-- [x] Kaggle: `MODE = "expertqa"` completes
-- [x] Dev: B vs window 1 on ExpertQA-long: positive but not significant (rule not met); B's gain is large where
-      the evidence lies beyond window 1 on both sets (`scripts/evidence_position.py`)
-
-## Step 7c: frequency-aware attention baseline
-
-Frequency-aware attention (arXiv 2602.18145, authors' cutoff 0.45) from the same single pass (`--freq`); checked
-against an authors-style reference implementation (difference 0.0).
-On Kaggle: `MODE = "freq-smoke"`, then `"freq"`; then `python -W ignore scripts/freq_check.py` on the Mac.
-
-- [x] Kaggle: `MODE = "freq"` completes (Version 9)
-- [x] Dev: FA vs Lookback: on par (pooled +0.009, n.s.) -> additional baseline
-- [ ] Kaggle: `MODE = "longfreq"` (FA on TechQA + ExpertQA-long, so every frozen baseline covers every dataset)
-
-## Freeze (25 Sep 2026) and the single test look
-
-Method, baselines, datasets and metrics are frozen (CLAUDE.md "FREEZE record"). `scripts/test_look.py` scores
-every frozen detector once on GASP's test split.
-
-`python scripts/cost_table.py` gives seconds per case for every detector (RQ3 cost).
 
 ## Credits
 
