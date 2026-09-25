@@ -12,6 +12,9 @@ Tables (sentence level; response level for the main table):
   controlled 512-token windows on RAGTruth / TofuEval: window 1 vs B vs the full 1800-token view (upper bound)
   evidence   (descriptive) B - window 1 on truncated test rows by where RAGBench's annotated evidence lies
 
+Outputs (results/test/, or results/test_dryrun/): test_look.{txt,csv,json} and test_scores.csv.gz (every scored
+row with every detector's score, so figures are drawn from this one look without refitting).
+
 --eval_on devhalf fits on half of the dev sources and scores the other half: a dry run that never touches the
 test split (used to check the code before the one real run).
 
@@ -143,15 +146,16 @@ def pooled(items, n=2000, seed=0):
     by_ds = {}
     for it in items:
         by_ds.setdefault(it[0], []).append(it)
+    pos = {id(t): {s: np.where(t["source_id"].values == s)[0] for s in t["source_id"].unique()} for _, t, _, _ in items}
+    srcs = {ds: sorted(set().union(*[set(t["source_id"]) for _, t, _, _ in its])) for ds, its in by_ds.items()}
     diffs = []
     for _ in range(n):
         dd = []
         for ds, its in by_ds.items():
-            srcs = sorted(set().union(*[set(t["source_id"]) for _, t, _, _ in its]))
-            draw = rng.choice(srcs, len(srcs), replace=True)
+            draw = rng.choice(srcs[ds], len(srcs[ds]), replace=True)
             for _, t, a, b in its:
-                pos = {s: np.where(t["source_id"].values == s)[0] for s in t["source_id"].unique()}
-                idx = np.concatenate([pos[s] for s in draw if s in pos])
+                p = pos[id(t)]
+                idx = np.concatenate([p[s] for s in draw if s in p])
                 y = t["label"].values[idx]
                 if y.min() != y.max():
                     dd.append(roc_auc_score(y, a[idx]) - roc_auc_score(y, b[idx]))
@@ -177,6 +181,7 @@ def main():
     say(f"# FROZEN DETECTORS, eval_on={args.eval_on} (fit on {'dev' if args.eval_on == 'test' else 'dev half A'}, "
         f"scored on {'TEST' if args.eval_on == 'test' else 'dev half B'})")
     keep = {}                          # (model, ds, level) -> (eval frame, {detector: scores})
+    dump = []                          # every evaluated row with every detector's score (figures, no refit)
     for ds in MAIN:
         for model in MODELS:
             df, cols = frame(model, ds)
@@ -189,6 +194,9 @@ def main():
                 tr, te = split(d, args.eval_on)
                 scores = {name: np.asarray(f(tr, te), float) for name, f in detectors(cols).items()}
                 keep[(model, ds, level)] = (te, scores)
+                ids = ["case_id", "sent_idx"] if level == "span" else ["case_id"]
+                dump.append(te[ids + ["source_id", "label", "trunc"] + (["ctx_kept"] if "ctx_kept" in te else [])]
+                            .assign(model=model, dataset=ds, level=level, **scores))
                 for name, s in scores.items():
                     rows.append(dict(model=model, dataset=ds, level=level, rows="all", detector=name, n=len(te),
                                      sources=int(te["source_id"].nunique()), auc=auc(te["label"], s)))
@@ -300,10 +308,11 @@ def main():
             say(f"  {r['model'].split('-')[0]:8s} {r['dataset']:13s} {r['group']:12s} n={r['n']:5d} | window 1 {r['window1']:.3f}"
                 f"  B {r['B']:.3f} | {fmt(r['diff'])}")
     res.to_csv(out_dir / "test_look.csv", index=False)
+    pd.concat(dump, ignore_index=True).to_csv(out_dir / "test_scores.csv.gz", index=False)
     json.dump(dict(eval_on=args.eval_on, comparisons=cmp, controlled=ctrl, evidence=ev),
               open(out_dir / "test_look.json", "w"), indent=1, default=float)
     (out_dir / "test_look.txt").write_text("\n".join(lines) + "\n")
-    print(f"\nsaved {out_dir}/test_look.{{txt,csv,json}}")
+    print(f"\nsaved {out_dir}/test_look.{{txt,csv,json}} and test_scores.csv.gz")
 
 
 if __name__ == "__main__":

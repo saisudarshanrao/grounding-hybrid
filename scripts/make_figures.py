@@ -1,4 +1,5 @@
-"""Paper figures from the saved DEV results (no test-split numbers).
+"""Paper figures. Default: from the saved DEV results (no test-split numbers). --test: the two main figures
+from the single logged test look (scripts/test_look.py outputs; nothing is refit here).
 
   fig1_coverage     (a) TechQA: out-of-fold AUC by share of the context inside the 1800-token window,
                         for GASP+base, Lookback (window 1) and B (max over windows)
@@ -10,9 +11,18 @@
                     premise does not hold
 Out-of-fold scores use the same grouped 5-fold CV as every dev analysis (scripts/rq2_where.py).
 
+  --test:
+  fig1_coverage_test   (a) TechQA / ExpertQA-long test AUC by share of the context inside window 1 (GASP+base,
+                           Lookback = window 1, B); (b) controlled truncation, test: window 1 vs B vs full view
+  fig2_detectors_test  test AUC of every frozen detector, 5 datasets x 2 scorers (sentence level)
+
 Usage:
-    python -W ignore scripts/make_figures.py       # -> results/figures/*.pdf and *.png
+    python -W ignore scripts/make_figures.py                   # dev figures -> results/figures/*.pdf and *.png
+    python -W ignore scripts/make_figures.py --test            # test figures from results/test/
+    python -W ignore scripts/make_figures.py --test results/test_dryrun   # same code on the dev-half dry run
 """
+import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -43,6 +53,11 @@ COL = {"Perplexity+length": "#bbbbbb", "GASP+base (S1)": "#e69f00", "ReDeEP [cv]
 SHORT = {"Perplexity+length": "Perplexity", "GASP+base (S1)": "GASP", "ReDeEP [cv]": "ReDeEP",
          "Frequency-aware [cv]": "Freq-aware",
          "Lookback (S3)": "Lookback", "B: Lookback max over windows": "B (ours)", "S2 prior alone": "Prior"}
+TEST_NAME = {"Perplexity+length": "Perplexity+length", "GASP+base": "GASP+base (S1)", "ReDeEP [cv]": "ReDeEP [cv]",
+             "Frequency-aware [cv]": "Frequency-aware [cv]", "Lookback [cv]": "Lookback (S3)",
+             "B (ours) [cv]": "B: Lookback max over windows"}
+DS_NAME = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA",
+           "expertqalong": "ExpertQA-long"}
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
                      "xtick.labelsize": 7, "ytick.labelsize": 7, "axes.spines.top": False,
                      "axes.spines.right": False, "savefig.bbox": "tight", "savefig.dpi": 200})
@@ -181,8 +196,83 @@ def fig4():
     save(fig, "fig4_prior")
 
 
+def fig1_test(tdir):
+    """(a) test AUC by share of the context inside window 1; (b) controlled truncation on test."""
+    sc = pd.read_csv(tdir / "test_scores.csv.gz")
+    sc = sc[sc.level == "span"]
+    ctrl = json.load(open(tdir / "test_look.json"))["controlled"]
+    fig, axes = plt.subplots(1, 3, figsize=(6.8, 2.3), gridspec_kw={"width_ratios": [1, 1, 1.1]})
+    for ax, ds in zip(axes[:2], ("techqa", "expertqalong")):
+        for model, short in MODELS.items():
+            t = sc[(sc.dataset == ds) & (sc.model == model)]
+            bins = pd.qcut(t["ctx_kept"], 4, duplicates="drop")
+            for det in ("GASP+base", "Lookback [cv]", "B (ours) [cv]"):
+                name = TEST_NAME[det]
+                aucs = [roc_auc_score(t["label"][bins == iv], t[det][bins == iv])
+                        if t["label"][bins == iv].nunique() == 2 else np.nan for iv in bins.cat.categories]
+                ax.plot([iv.mid for iv in bins.cat.categories], aucs, marker="o", ms=3, color=COL[name],
+                        ls="-" if short.startswith("Qwen") else "--",
+                        label=SHORT[name] if short.startswith("Qwen") else None)
+        ax.axhline(0.5, color="k", lw=0.5, ls=":")
+        ax.set_xlabel("share of context in window 1")
+        ax.set_title(f"({'ab'[ds != 'techqa']}) {DS_NAME[ds]}, test")
+        ax.set_ylim(0.4, 0.95)
+    axes[0].set_ylabel("test AUC (sentence level)")
+    axes[0].legend(frameon=False, loc="lower left", fontsize=6)
+    from matplotlib.lines import Line2D
+    axes[1].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")],
+                   ["Qwen2.5-1.5B", "SmolLM2-1.7B"], frameon=False, loc="lower left", fontsize=6)
+    b = axes[2]
+    keys = [("window 1", "window 1 (truncated)", "#56b4e9"), ("B", "B (max over windows)", "#009e73"),
+            ("full view", "full context (upper bound)", "#dddddd")]
+    x = np.arange(len(ctrl))
+    for i, (k, lab, color) in enumerate(keys):
+        b.bar(x + (i - 1) * 0.27, [r[k] for r in ctrl], 0.27, label=lab, color=color, edgecolor="k", lw=0.3)
+    b.set_xticks(x, [f"{r['model'].split('-')[0]}\n{DS_NAME[r['dataset']]}" for r in ctrl])
+    b.set_ylim(0.5, 0.95)
+    b.set_ylabel("test AUC, truncated rows")
+    b.set_title("(c) controlled truncation (512), test")
+    b.legend(frameon=False, loc="upper left", fontsize=6, handlelength=1.2)
+    save(fig, "fig1_coverage_test")
+
+
+def fig2_test(tdir):
+    """Test AUC of every frozen detector; B only where a context needs more than one window."""
+    r = pd.read_csv(tdir / "test_look.csv")
+    r = r[(r.level == "span") & (r.rows == "all")]
+    dets = [d for d in TEST_NAME if d in set(r["detector"])]
+    order = [d for d in DS_NAME if d in set(r["dataset"])]
+    w = 0.8 / len(dets)
+    fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.2), sharey=True)
+    for ax, (model, short) in zip(axes, MODELS.items()):
+        sub = r[r.model == model].set_index(["dataset", "detector"])["auc"]
+        x = np.arange(len(order))
+        for i, det in enumerate(dets):
+            v = [sub.get((ds, det), np.nan) for ds in order]
+            ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], edgecolor="k", lw=0.3,
+                   label=SHORT[TEST_NAME[det]])
+        ax.set_xticks(x, [DS_NAME[d].replace("-", "-\n") for d in order])
+        ax.set_ylim(0.45, 0.9)
+        ax.axhline(0.5, color="k", lw=0.5, ls=":")
+        ax.set_title(short)
+    axes[0].set_ylabel("test AUC (sentence level)")
+    axes[1].legend(frameon=False, ncol=1, loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    save(fig, "fig2_detectors_test")
+
+
 if __name__ == "__main__":
-    fig2()
-    fig3()
-    fig4()
-    fig1()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--test", nargs="?", const=str(ROOT / "results" / "test"), default=None,
+                    help="draw the test figures from this test_look output folder")
+    args = ap.parse_args()
+    if args.test:
+        tdir = Path(args.test)
+        if tdir.name != "test":            # dry run: keep its figures apart from the real ones
+            OUT = OUT / tdir.name
+        fig2_test(tdir)
+        fig1_test(tdir)
+    else:
+        fig2()
+        fig3()
+        fig4()
+        fig1()
