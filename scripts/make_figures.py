@@ -52,11 +52,12 @@ COL = {"Perplexity+length": "#bbbbbb", "GASP+base (S1)": "#e69f00", "ReDeEP [cv]
        "Lookback (S3)": "#0072b2", "B: Lookback max over windows": "#009e73", "S2 prior alone": "#999999"}
 SHORT = {"Perplexity+length": "Perplexity", "GASP+base (S1)": "GASP", "ReDeEP [cv]": "ReDeEP",
          "Frequency-aware [cv]": "Freq-aware",
-         "Lookback (S3)": "Lookback", "B: Lookback max over windows": "B (ours)", "S2 prior alone": "Prior"}
+         "Lookback (S3)": "Lookback", "B: Lookback max over windows": "B (ours, new)", "S2 prior alone": "Prior"}
 TEST_NAME = {"Perplexity+length": "Perplexity+length", "GASP+base": "GASP+base (S1)", "ReDeEP [cv]": "ReDeEP [cv]",
              "Frequency-aware [cv]": "Frequency-aware [cv]", "Lookback [cv]": "Lookback (S3)",
              "B (ours) [cv]": "B: Lookback max over windows"}
 SPLIT = "test"                         # axis / title label of the --test figures
+OURS = dict(hatch="////", edgecolor="k", lw=0.9)   # how B's bars stand out as this paper's new result
 DS_NAME = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA",
            "expertqalong": "ExpertQA-long"}
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
@@ -211,9 +212,10 @@ def fig1_test(tdir):
                 name = TEST_NAME[det]
                 aucs = [roc_auc_score(t["label"][bins == iv], t[det][bins == iv])
                         if t["label"][bins == iv].nunique() == 2 else np.nan for iv in bins.cat.categories]
-                ax.plot([iv.mid for iv in bins.cat.categories], aucs, marker="o", ms=3, color=COL[name],
-                        ls="-" if short.startswith("Qwen") else "--",
-                        label=SHORT[name] if short.startswith("Qwen") else None)
+                ours = det.startswith("B")
+                ax.plot([iv.mid for iv in bins.cat.categories], aucs, marker="o", ms=4 if ours else 3,
+                        lw=2.2 if ours else 1.0, color=COL[name], ls="-" if short.startswith("Qwen") else "--",
+                        label=SHORT[name] if short.startswith("Qwen") else None, zorder=3 if ours else 2)
         ax.axhline(0.5, color="k", lw=0.5, ls=":")
         ax.set_xlabel("share of context in window 1")
         ax.set_title(f"({'ab'[ds != 'techqa']}) {DS_NAME[ds]}, {SPLIT}")
@@ -224,18 +226,72 @@ def fig1_test(tdir):
     axes[1].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")],
                    ["Qwen2.5-1.5B", "SmolLM2-1.7B"], frameon=False, loc="lower left", fontsize=6)
     b = axes[2]
-    keys = [("window 1", "window 1 (truncated)", "#56b4e9"), ("B", "B (max over windows)", "#009e73"),
+    keys = [("window 1", "window 1 (truncated)", "#56b4e9"), ("B", "B (ours, new)", "#009e73"),
             ("full view", "full context (upper bound)", "#dddddd")]
     x = np.arange(len(ctrl))
     for i, (k, lab, color) in enumerate(keys):
-        b.bar(x + (i - 1) * 0.27, [r[k] for r in ctrl], 0.27, label=lab, color=color, edgecolor="k", lw=0.3)
+        style = OURS if k == "B" else dict(edgecolor="k", lw=0.3)
+        b.bar(x + (i - 1) * 0.27, [r[k] for r in ctrl], 0.27, label=lab, color=color, **style)
+    for xi, r in zip(x, ctrl):                      # B - window 1 on this run, as tested
+        d = r["diff"]
+        b.text(xi, max(r["B"], r["window 1"]) + 0.012, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}",
+               ha="center", fontsize=5.5, color="#006b4f")
     b.set_xticks(x, [f"{r['model'].split('-')[0].replace('2.5', '')}\n{DS_NAME[r['dataset']]}" for r in ctrl], fontsize=6)
-    b.set_ylim(0.5, 0.95)
+    b.set_ylim(0.5, 1.0)
     b.set_ylabel(f"{SPLIT} AUC, truncated rows")
     b.set_title(f"(c) controlled truncation (512), {SPLIT}")
     fig.subplots_adjust(wspace=0.45)
     b.legend(frameon=False, loc="upper left", fontsize=6, handlelength=1.2)
     save(fig, "fig1_coverage_test")
+
+
+def fig0_test(tdir):
+    """This paper's new results at a glance: (a) B vs baselines on truncated sentences of the long-context sets,
+    with B - Lookback written above B; (b) the three checks written before the test look (P1-P3)."""
+    r = pd.read_csv(tdir / "test_look.csv")
+    r = r[(r.level == "span") & (r.rows == "truncated")]
+    cmp = json.load(open(tdir / "test_look.json"))["comparisons"]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(7.6, 2.6), gridspec_kw={"width_ratios": [1.5, 1]})
+    runs = [(ds, m) for ds in ("techqa", "expertqalong") for m in MODELS]
+    x, w = np.arange(len(runs)), 0.26
+    for i, (det, lab) in enumerate([("GASP+base", "GASP"), ("Lookback [cv]", "Lookback (window 1)"),
+                                    ("B (ours) [cv]", "B (ours, new)")]):
+        v = [r[(r.dataset == ds) & (r.model == m) & (r.detector == det)]["auc"].iloc[0] for ds, m in runs]
+        style = OURS if det.startswith("B") else dict(edgecolor="k", lw=0.3)
+        a.bar(x + (i - 1) * w, v, w, color=COL[TEST_NAME[det]], label=lab, **style)
+        if det.startswith("B"):
+            for xi, vi, (ds, m) in zip(x, v, runs):
+                d = cmp[f"{m.split('-')[0]} {ds} span | B - Lookback (truncated rows)"]
+                a.text(xi + w, vi + 0.008, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}", ha="center", fontsize=6,
+                       color="#006b4f", fontweight="bold" if d["sig"] else "normal")
+    a.set_xticks(x, [f"{DS_NAME[ds]}\n{MODELS[m].split('-')[0].replace('2.5', '')}" for ds, m in runs], fontsize=6.3)
+    a.set_ylim(0.5, 0.9)
+    a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
+    a.set_title("(a) Long contexts: B vs the baselines")
+    a.legend(frameon=False, loc="upper left", ncol=3, fontsize=6, columnspacing=1.0, handlelength=1.6)
+    dev_p1 = json.load(open(GATING / "dev_coverage_checks_chunked_ctx512.json"))["pooled"]["ALL 4 runs | max"]
+    checks = [("P3  Lookback \u2212 GASP\n5 datasets \u00d7 2 scorers", cmp["POOLED all 5 datasets x 2 | Lookback - GASP+base"], None),
+              ("P2  B \u2212 Lookback\nlong contexts, truncated", cmp["POOLED real long-context (TechQA, ExpertQA-long x 2) truncated rows | B - Lookback"], None),
+              ("P1  B \u2212 window 1\ncontrolled 512 tokens", cmp["POOLED controlled 512 (4 runs) | B - window 1"],
+               dict(mean=dev_p1["diff"], lo=dev_p1["lo"], hi=dev_p1["hi"]))]
+    for yi, (lab, t, dv) in enumerate(checks):
+        y = len(checks) - 1 - yi
+        color = "#009e73" if "B" in lab.split("\n")[0] else COL["Lookback (S3)"]
+        b.errorbar(t["mean"], y, xerr=[[t["mean"] - t["lo"]], [t["hi"] - t["mean"]]], fmt="o", color=color, ms=5,
+                   capsize=2, lw=1.2)
+        if dv is not None:
+            b.errorbar(dv["mean"], y - 0.28, xerr=[[dv["mean"] - dv["lo"]], [dv["hi"] - dv["mean"]]], fmt="o",
+                       mfc="white", color=color, ms=4, capsize=2, lw=0.8)
+        b.text(0.125, y, "holds" if t["sig"] and t["mean"] > 0 else "does not hold", va="center", fontsize=6.5,
+               color="#006b4f" if t["sig"] else "#a33")
+    b.axvline(0, color="k", lw=0.6, ls=":")
+    b.set_yticks(range(len(checks)), [c[0] for c in reversed(checks)], fontsize=6.5)
+    b.set_xlim(-0.03, 0.16)
+    b.set_ylim(-0.6, len(checks) - 0.5)
+    b.set_xlabel("AUC difference, 95% interval (filled: test, open: dev)")
+    b.set_title("(b) Checks written before the test look")
+    fig.subplots_adjust(wspace=0.55)
+    save(fig, "fig0_main_results_test")
 
 
 def fig2_test(tdir):
@@ -251,8 +307,9 @@ def fig2_test(tdir):
         x = np.arange(len(order))
         for i, det in enumerate(dets):
             v = [sub.get((ds, det), np.nan) for ds in order]
-            ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], edgecolor="k", lw=0.3,
-                   label=SHORT[TEST_NAME[det]])
+            style = OURS if det.startswith("B") else dict(edgecolor="k", lw=0.3)
+            ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], label=SHORT[TEST_NAME[det]],
+                   **style)
         ax.set_xticks(x, [DS_NAME[d].replace("-", "-\n") for d in order], fontsize=6)
         ax.set_ylim(0.45, 0.9)
         ax.axhline(0.5, color="k", lw=0.5, ls=":")
@@ -271,6 +328,7 @@ if __name__ == "__main__":
         tdir = Path(args.test)
         if tdir.name != "test":            # dry run: keep its figures apart from the real ones
             OUT, SPLIT = OUT / tdir.name, "dry run"
+        fig0_test(tdir)
         fig2_test(tdir)
         fig1_test(tdir)
     else:
