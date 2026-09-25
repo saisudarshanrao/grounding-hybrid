@@ -85,7 +85,9 @@ def main():
     lines += [f"| {k} | {i} | {c} | {w} |" for k, (i, c, w) in VERSIONS.items()]
     lines += ["", "Version 8 was an accidental save, cancelled; it produced nothing used here.",
               "Version 9's runtime patch only copies the answer part of the attention matrix instead of keeping a view",
-              "(memory); it does not change any value. The same change was pushed as 88668d9.", "",
+              "(memory); it does not change any value. The same change was pushed as 88668d9.",
+              "Version 10 reran GASP on TechQA and ExpertQA-long: sentence.csv, response.csv and cases.jsonl are",
+              "byte-identical to Versions 6 and 7 (GASP scoring is deterministic).", "",
               "## Files", "",
               "rows = same (case_id, sent_idx) rows in the same order as GASP's sentence.csv; "
               "lb = max |lookback - base lookback| (0 = window 1 reads exactly what the base file read; "
