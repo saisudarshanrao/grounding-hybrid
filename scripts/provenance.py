@@ -85,10 +85,10 @@ def main():
             win = ("one long pass (up to %d positions)" % meta["max_positions"] if long else
                    f"{meta.get('max_ctx_tokens', 1800)}/{meta.get('overlap', '-')}" if meta.get("chunked") else "1800 (GASP view)")
             dlogp = a["logprob_absdiff_mean_fits_1800" if long else "logprob_absdiff_mean"]
+            dlogp = "n/a (no context fits)" if dlogp is None else f"{dlogp:.4f}" + (" (fits 1800)" if long else "")
             rows.append({"run": run.name, "file": f.name, "version": version_of(ds, f.name), "windows": win,
                          "rows": f"{len(z['case_id'])} {'same' if same else 'DIFFERENT'}", "lb": lb,
-                         "align": f"{'ok' if ok else 'FAIL'}, dlogp {dlogp:.4f}" + (" (fits 1800)" if long else ""),
-                         "sha": sha(f)})
+                         "align": f"{'ok' if ok else 'FAIL'}, dlogp {dlogp}", "sha": sha(f)})
     lines = ["# Provenance of saved results (Step 9)", "",
              "Made by `scripts/provenance.py`. Every number in the paper comes from these files; none were re-extracted.",
              "Kaggle notebook `sudarshan1234/notebook83d38bc56a`; a version's log is at",
