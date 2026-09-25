@@ -56,6 +56,7 @@ SHORT = {"Perplexity+length": "Perplexity", "GASP+base (S1)": "GASP", "ReDeEP [c
 TEST_NAME = {"Perplexity+length": "Perplexity+length", "GASP+base": "GASP+base (S1)", "ReDeEP [cv]": "ReDeEP [cv]",
              "Frequency-aware [cv]": "Frequency-aware [cv]", "Lookback [cv]": "Lookback (S3)",
              "B (ours) [cv]": "B: Lookback max over windows"}
+SPLIT = "test"                         # axis / title label of the --test figures
 DS_NAME = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA",
            "expertqalong": "ExpertQA-long"}
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
@@ -201,7 +202,7 @@ def fig1_test(tdir):
     sc = pd.read_csv(tdir / "test_scores.csv.gz")
     sc = sc[sc.level == "span"]
     ctrl = json.load(open(tdir / "test_look.json"))["controlled"]
-    fig, axes = plt.subplots(1, 3, figsize=(6.8, 2.3), gridspec_kw={"width_ratios": [1, 1, 1.1]})
+    fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.3), gridspec_kw={"width_ratios": [1, 1, 1.35]})
     for ax, ds in zip(axes[:2], ("techqa", "expertqalong")):
         for model, short in MODELS.items():
             t = sc[(sc.dataset == ds) & (sc.model == model)]
@@ -215,9 +216,9 @@ def fig1_test(tdir):
                         label=SHORT[name] if short.startswith("Qwen") else None)
         ax.axhline(0.5, color="k", lw=0.5, ls=":")
         ax.set_xlabel("share of context in window 1")
-        ax.set_title(f"({'ab'[ds != 'techqa']}) {DS_NAME[ds]}, test")
+        ax.set_title(f"({'ab'[ds != 'techqa']}) {DS_NAME[ds]}, {SPLIT}")
         ax.set_ylim(0.4, 0.95)
-    axes[0].set_ylabel("test AUC (sentence level)")
+    axes[0].set_ylabel(f"{SPLIT} AUC (sentence level)")
     axes[0].legend(frameon=False, loc="lower left", fontsize=6)
     from matplotlib.lines import Line2D
     axes[1].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")],
@@ -228,10 +229,11 @@ def fig1_test(tdir):
     x = np.arange(len(ctrl))
     for i, (k, lab, color) in enumerate(keys):
         b.bar(x + (i - 1) * 0.27, [r[k] for r in ctrl], 0.27, label=lab, color=color, edgecolor="k", lw=0.3)
-    b.set_xticks(x, [f"{r['model'].split('-')[0]}\n{DS_NAME[r['dataset']]}" for r in ctrl])
+    b.set_xticks(x, [f"{r['model'].split('-')[0].replace('2.5', '')}\n{DS_NAME[r['dataset']]}" for r in ctrl], fontsize=6)
     b.set_ylim(0.5, 0.95)
-    b.set_ylabel("test AUC, truncated rows")
-    b.set_title("(c) controlled truncation (512), test")
+    b.set_ylabel(f"{SPLIT} AUC, truncated rows")
+    b.set_title(f"(c) controlled truncation (512), {SPLIT}")
+    fig.subplots_adjust(wspace=0.45)
     b.legend(frameon=False, loc="upper left", fontsize=6, handlelength=1.2)
     save(fig, "fig1_coverage_test")
 
@@ -251,11 +253,11 @@ def fig2_test(tdir):
             v = [sub.get((ds, det), np.nan) for ds in order]
             ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], edgecolor="k", lw=0.3,
                    label=SHORT[TEST_NAME[det]])
-        ax.set_xticks(x, [DS_NAME[d].replace("-", "-\n") for d in order])
+        ax.set_xticks(x, [DS_NAME[d].replace("-", "-\n") for d in order], fontsize=6)
         ax.set_ylim(0.45, 0.9)
         ax.axhline(0.5, color="k", lw=0.5, ls=":")
         ax.set_title(short)
-    axes[0].set_ylabel("test AUC (sentence level)")
+    axes[0].set_ylabel(f"{SPLIT} AUC (sentence level)")
     axes[1].legend(frameon=False, ncol=1, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     save(fig, "fig2_detectors_test")
 
@@ -268,7 +270,7 @@ if __name__ == "__main__":
     if args.test:
         tdir = Path(args.test)
         if tdir.name != "test":            # dry run: keep its figures apart from the real ones
-            OUT = OUT / tdir.name
+            OUT, SPLIT = OUT / tdir.name, "dry run"
         fig2_test(tdir)
         fig1_test(tdir)
     else:
