@@ -100,10 +100,11 @@ class LongPass:
                 return
             w = answer_rows(module, TAP.q, TAP.k, self._P)
             TAP.q, TAP.k = None, None
+            self._lb[layer_idx] = lookback_ratio(w, self._P)
             if self.check_diff is not None and output[1] is not None:   # check (a): eager weights of this pass
                 eager = output[1][0, :, self._P:, :].float()
                 self.check_diff = max(self.check_diff, float((w - eager).abs().max()))
-            self._lb[layer_idx] = lookback_ratio(w, self._P)
+                return (output[0], None) + tuple(output[2:])   # drop them: every layer's T x T map would not fit
         return hook
 
     def encode(self, case, limit=None):

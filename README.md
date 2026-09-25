@@ -65,6 +65,7 @@ scripts/ -- dev-only analyses (grouped CV on the dev split; never touch test)
   rq2_where.py               every detector by dataset, domain, prior and position
   robustness_cv.py           stability of the key comparisons over CV fold assignments
   ablation_layers.py         which layers and heads carry the Lookback signal
+  e1_long_pass.py            B vs one long single pass (baseline L) on the long sets (--eval_on dev; test once after)
   mac_smoke_test.py          GASP on one toy example (Mac check)
 ```
 

@@ -8,6 +8,9 @@ within ~0.01 of GASP's), and two cross-file checks made here:
   lb=   - max |lookback - lookback of the base file| (features.npz; for the long sets, the
           chunked_redeep file): 0 means window 1 is exactly the same reading as the base file
 Controlled-truncation files (ctx512) read a shorter window on purpose, so lb= is not expected to be 0.
+The long-pass file (features_long.npz, step E1) reads more context on purpose; its lb= is taken only on
+responses whose whole context fits GASP's 1800 tokens (the same text as window 1, read with a different
+attention kernel), where it must stay within the E1 check's 1e-3.
 
 Usage:
     python scripts/provenance.py        # -> results/PROVENANCE.md
@@ -37,6 +40,7 @@ VERSIONS = {
     10: ("352565636", "47b04f9", "frequency-aware attention, long sets (MODE longfreq)"),
 }
 LONG = ("techqa", "expertqalong")
+LONGPASS_VERSION = None   # the MODE longpass run (step E1); set when it is saved
 
 
 def version_of(ds, name):
@@ -44,6 +48,8 @@ def version_of(ds, name):
         return {"techqa": 6, "expertqalong": 7}.get(ds, 1)
     if name == "features_freq.npz":
         return 10 if ds in LONG else 9
+    if name == "features_long.npz":
+        return LONGPASS_VERSION
     return {"features.npz": 2, "features_chunked.npz": 3, "features_chunked_ctx512.npz": 4,
             "features_redeep.npz": 5}.get(name, {"techqa": 6, "expertqalong": 7}.get(ds))
 
@@ -70,12 +76,17 @@ def main():
             a = meta["alignment"]
             same = (len(z["case_id"]) == len(sent) and (z["case_id"] == sent["case_id"].values).all()
                     and (z["sent_idx"] == sent["sent_idx"].values).all())
-            lb = "" if base is None or f.name == base_name else f"{np.abs(z['lookback'] - base).max():.1e}"
+            long = f.name.startswith("features_long")
+            fit = z["n_ctx_tokens"] <= 1800 if long else np.ones(len(z["case_id"]), bool)
+            lb = ("" if base is None or f.name == base_name or not (same and fit.any()) else
+                  f"{np.abs(z['lookback'][fit].astype(np.float32) - base[fit].astype(np.float32)).max():.1e}")
             ok = a["covered"] == a["gasp_rows"] and a["extra"] == 0 and a["n_tok_match"] and a.get("nan_rows", 0) == 0
-            win = f"{meta.get('max_ctx_tokens', 1800)}/{meta.get('overlap', '-')}" if meta.get("chunked") else "1800 (GASP view)"
+            win = ("one long pass (up to %d positions)" % meta["max_positions"] if long else
+                   f"{meta.get('max_ctx_tokens', 1800)}/{meta.get('overlap', '-')}" if meta.get("chunked") else "1800 (GASP view)")
+            dlogp = a["logprob_absdiff_mean_fits_1800" if long else "logprob_absdiff_mean"]
             rows.append({"run": run.name, "file": f.name, "version": version_of(ds, f.name), "windows": win,
                          "rows": f"{len(z['case_id'])} {'same' if same else 'DIFFERENT'}", "lb": lb,
-                         "align": f"{'ok' if ok else 'FAIL'}, dlogp {a['logprob_absdiff_mean']:.4f}",
+                         "align": f"{'ok' if ok else 'FAIL'}, dlogp {dlogp:.4f}" + (" (fits 1800)" if long else ""),
                          "sha": sha(f)})
     lines = ["# Provenance of saved results (Step 9)", "",
              "Made by `scripts/provenance.py`. Every number in the paper comes from these files; none were re-extracted.",
@@ -99,7 +110,8 @@ def main():
     OUT.write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     bad = [r for r in rows if "DIFFERENT" in r["rows"] or "FAIL" in r["align"]
-           or (r["lb"] and "ctx512" not in r["file"] and float(r["lb"]) > 1e-4)]
+           or (r["lb"] and "ctx512" not in r["file"]
+               and float(r["lb"]) > (1e-3 if r["file"].startswith("features_long") else 1e-4))]
     print(f"\n{len(rows)} entries, {len(bad)} problems" + ("".join(f"\n  {r['run']} {r['file']}" for r in bad)))
 
 

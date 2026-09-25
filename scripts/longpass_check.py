@@ -80,6 +80,7 @@ def main():
                     logprob_absdiff_max=float(max(lpd)))
     rep["b"]["pass"] = bool(covered == len(ref) and ntok_ok and d.max() <= TOL_B_MAX and d.mean() <= TOL_B_MEAN
                             and max(lpd) <= TOL_LP)
+    print("(b)", json.dumps(rep["b"]), flush=True)
 
     if not args.no_long:   # real long passes on the same cases
         print("long-pass sample", flush=True)
@@ -99,6 +100,7 @@ def main():
                                   cut=sum(r["ctx_cut"] for r in runs), all_finite=all(r["finite"] for r in runs),
                                   max_seconds=max(r["seconds"] for r in runs),
                                   max_peak_gb=max((r["peak_gb"] or 0) for r in runs))
+        print("long-pass sample", json.dumps(rep["long_sample"]), flush=True)
     lp = None
     cleanup()
 
