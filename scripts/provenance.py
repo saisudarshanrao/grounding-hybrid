@@ -38,9 +38,10 @@ VERSIONS = {
     7: ("352456307", "cba5da1", "ExpertQA-long GASP + windows + ReDeEP (MODE expertqa)"),
     9: ("352495157", "64ab33e + runtime patch (= 88668d9)", "frequency-aware attention (MODE freq)"),
     10: ("352565636", "47b04f9", "frequency-aware attention, long sets (MODE longfreq)"),
+    11: ("352758371", "561950f", "one long pass (baseline L, step E1), long sets (MODE longpass)"),
 }
 LONG = ("techqa", "expertqalong")
-LONGPASS_VERSION = None   # the MODE longpass run (step E1); set when it is saved
+LONGPASS_VERSION = 11
 
 
 def version_of(ds, name):
