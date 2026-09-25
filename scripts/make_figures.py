@@ -58,6 +58,7 @@ TEST_NAME = {"Perplexity+length": "Perplexity+length", "GASP+base": "GASP+base (
              "B (ours) [cv]": "B: Lookback max over windows"}
 SPLIT = "test"                         # axis / title label of the --test figures
 OURS = dict(hatch="////", edgecolor="k", lw=0.9)   # how B's bars stand out as this paper's new result
+COL_L = "#d55e00"                      # baseline L: one long pass (step E1)
 DS_NAME = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA",
            "expertqalong": "ExpertQA-long"}
 plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8, "legend.fontsize": 7,
@@ -245,35 +246,56 @@ def fig1_test(tdir):
     save(fig, "fig1_coverage_test")
 
 
+def e1_results(tdir):
+    """(test P4 json, dev json) of step E1 (one long pass, L), or (None, None) before E1 ran."""
+    t, d = tdir / "e1_test_look_P4.json", ROOT / "results" / "e1" / "e1_dev.json"
+    return (json.load(open(t)), json.load(open(d))) if t.exists() and d.exists() else (None, None)
+
+
+def e1_auc(e1, rows, ds, m, block="L"):
+    return next(x[block] for x in e1["table"] if x["dataset"] == ds and x["rows"] == rows
+                and x["model"] == m.split("-")[0])
+
+
 def fig0_test(tdir):
     """This paper's new results at a glance: (a) B vs baselines on truncated sentences of the long-context sets,
-    with B - Lookback written above B; (b) the three checks written before the test look (P1-P3)."""
+    with B - Lookback written above B; (b) the checks written before each test look (P1-P3; P4 = E1, if run)."""
     r = pd.read_csv(tdir / "test_look.csv")
     r = r[(r.level == "span") & (r.rows == "truncated")]
     cmp = json.load(open(tdir / "test_look.json"))["comparisons"]
+    e1, e1_dev = e1_results(tdir)
     fig, (a, b) = plt.subplots(1, 2, figsize=(7.6, 2.6), gridspec_kw={"width_ratios": [1.5, 1]})
     runs = [(ds, m) for ds in ("techqa", "expertqalong") for m in MODELS]
-    x, w = np.arange(len(runs)), 0.26
-    for i, (det, lab) in enumerate([("GASP+base", "GASP"), ("Lookback [cv]", "Lookback (window 1)"),
-                                    ("B (ours) [cv]", "B (ours, new)")]):
-        v = [r[(r.dataset == ds) & (r.model == m) & (r.detector == det)]["auc"].iloc[0] for ds, m in runs]
-        style = OURS if det.startswith("B") else dict(edgecolor="k", lw=0.3)
-        a.bar(x + (i - 1) * w, v, w, color=COL[TEST_NAME[det]], label=lab, **style)
-        if det.startswith("B"):
-            for xi, vi, (ds, m) in zip(x, v, runs):
-                d = cmp[f"{m.split('-')[0]} {ds} span | B - Lookback (truncated rows)"]
-                a.text(xi + w, vi + 0.008, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}", ha="center", fontsize=6,
-                       color="#006b4f", fontweight="bold" if d["sig"] else "normal")
+    dets = [("GASP+base", "GASP"), ("Lookback [cv]", "Lookback (window 1)")]
+    dets += [("L", "one long pass (L)")] if e1 else []
+    dets += [("B (ours) [cv]", "B (ours, new)")]
+    x, w = np.arange(len(runs)), 0.78 / len(dets)
+    top = np.zeros(len(runs))                       # tallest bar per run, so labels clear every bar
+    for i, (det, lab) in enumerate(dets):
+        if det == "L":
+            v = [e1_auc(e1, "truncated", ds, m) for ds, m in runs]
+            a.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL_L, label=lab, edgecolor="k", lw=0.3)
+        else:
+            v = [r[(r.dataset == ds) & (r.model == m) & (r.detector == det)]["auc"].iloc[0] for ds, m in runs]
+            style = OURS if det.startswith("B") else dict(edgecolor="k", lw=0.3)
+            a.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], label=lab, **style)
+        top = np.maximum(top, v)
+    for xi, ti, (ds, m) in zip(x, top, runs):       # B - Lookback on this run, as tested (P2)
+        d = cmp[f"{m.split('-')[0]} {ds} span | B - Lookback (truncated rows)"]
+        a.text(xi + (len(dets) - 1) / 2 * w, ti + 0.008, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}",
+               ha="center", fontsize=5.5, color="#006b4f", fontweight="bold" if d["sig"] else "normal")
     a.set_xticks(x, [f"{DS_NAME[ds]}\n{MODELS[m].split('-')[0].replace('2.5', '')}" for ds, m in runs], fontsize=6.3)
     a.set_ylim(0.5, 0.9)
     a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
     a.set_title("(a) Long contexts: B vs the baselines")
-    a.legend(frameon=False, loc="upper left", ncol=3, fontsize=6, columnspacing=1.0, handlelength=1.6)
+    a.legend(frameon=False, loc="upper left", ncol=len(dets), fontsize=5.8, columnspacing=0.8, handlelength=1.4)
     dev_p1 = json.load(open(GATING / "dev_coverage_checks_chunked_ctx512.json"))["pooled"]["ALL 4 runs | max"]
     checks = [("P3  Lookback \u2212 GASP\n5 datasets \u00d7 2 scorers", cmp["POOLED all 5 datasets x 2 | Lookback - GASP+base"], None),
               ("P2  B \u2212 Lookback\nlong contexts, truncated", cmp["POOLED real long-context (TechQA, ExpertQA-long x 2) truncated rows | B - Lookback"], None),
               ("P1  B \u2212 window 1\ncontrolled 512 tokens", cmp["POOLED controlled 512 (4 runs) | B - window 1"],
                dict(mean=dev_p1["diff"], lo=dev_p1["lo"], hi=dev_p1["hi"]))]
+    if e1:          # P4 (step E1, after the freeze): a tie reads "matches"
+        checks.append(("P4  B \u2212 one long pass\nlong contexts, truncated", e1["primary"]["D"], e1_dev["primary"]["D"]))
     for yi, (lab, t, dv) in enumerate(checks):
         y = len(checks) - 1 - yi
         color = "#009e73" if "B" in lab.split("\n")[0] else COL["Lookback (S3)"]
@@ -282,14 +304,16 @@ def fig0_test(tdir):
         if dv is not None:
             b.errorbar(dv["mean"], y - 0.28, xerr=[[dv["mean"] - dv["lo"]], [dv["hi"] - dv["mean"]]], fmt="o",
                        mfc="white", color=color, ms=4, capsize=2, lw=0.8)
-        b.text(0.125, y, "holds" if t["sig"] and t["mean"] > 0 else "does not hold", va="center", fontsize=6.5,
-               color="#006b4f" if t["sig"] else "#a33")
+        verdict = ("matches (tie)" if lab.startswith("P4") and not t["sig"] else
+                   "holds" if t["sig"] and t["mean"] > 0 else "does not hold")
+        b.text(0.125, y, verdict, va="center", fontsize=6.5,
+               color="#006b4f" if t["sig"] or verdict.startswith("matches") else "#a33")
     b.axvline(0, color="k", lw=0.6, ls=":")
     b.set_yticks(range(len(checks)), [c[0] for c in reversed(checks)], fontsize=6.5)
     b.set_xlim(-0.03, 0.16)
     b.set_ylim(-0.6, len(checks) - 0.5)
     b.set_xlabel("AUC difference, 95% interval (filled: test, open: dev)")
-    b.set_title("(b) Checks written before the test look")
+    b.set_title("(b) Checks written before each test look")
     fig.subplots_adjust(wspace=0.55)
     save(fig, "fig0_main_results_test")
 
@@ -298,7 +322,10 @@ def fig2_test(tdir):
     """Test AUC of every frozen detector; B only where a context needs more than one window."""
     r = pd.read_csv(tdir / "test_look.csv")
     r = r[(r.level == "span") & (r.rows == "all")]
+    e1, _ = e1_results(tdir)
     dets = [d for d in TEST_NAME if d in set(r["detector"])]
+    if e1:                              # baseline L (step E1) on the long-context sets, next to B
+        dets.insert(dets.index("B (ours) [cv]"), "L")
     order = [d for d in DS_NAME if d in set(r["dataset"])]
     w = 0.8 / len(dets)
     fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.2), sharey=True)
@@ -306,6 +333,11 @@ def fig2_test(tdir):
         sub = r[r.model == model].set_index(["dataset", "detector"])["auc"]
         x = np.arange(len(order))
         for i, det in enumerate(dets):
+            if det == "L":
+                v = [e1_auc(e1, "all", ds, model) if ds in ("techqa", "expertqalong") else np.nan for ds in order]
+                ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL_L, label="One long pass (L)",
+                       edgecolor="k", lw=0.3)
+                continue
             v = [sub.get((ds, det), np.nan) for ds in order]
             style = OURS if det.startswith("B") else dict(edgecolor="k", lw=0.3)
             ax.bar(x + (i - (len(dets) - 1) / 2) * w, v, w, color=COL[TEST_NAME[det]], label=SHORT[TEST_NAME[det]],
@@ -317,6 +349,62 @@ def fig2_test(tdir):
     axes[0].set_ylabel(f"{SPLIT} AUC (sentence level)")
     axes[1].legend(frameon=False, ncol=1, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     save(fig, "fig2_detectors_test")
+
+
+def fig5_e1_test(tdir):
+    """Step E1: (a) B - L per run and pooled, dev (open) and test (filled); (b, c) L's peak GPU memory and
+    seconds per response vs sequence length (B's passes never exceed the 1800-token window plus the answer)."""
+    e1, e1_dev = e1_results(tdir)
+    if e1 is None:
+        return
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.6, 2.3), gridspec_kw={"width_ratios": [1.25, 1, 1]})
+    runs = [(ds, m) for ds in ("techqa", "expertqalong") for m in MODELS]
+    labels = [f"{DS_NAME[ds]}, {MODELS[m].split('-')[0].replace('2.5', '')}" for ds, m in runs] + ["pooled (P4)"]
+    for yi, lab in enumerate(labels):
+        y = len(labels) - 1 - yi
+        if yi < len(runs):
+            ds, m = runs[yi]
+            k = f"{m.split('-')[0]} {ds} | B - L (truncated)"
+            t, d = e1["secondary"][k], e1_dev["secondary"][k]
+        else:
+            t, d = e1["primary"]["D"], e1_dev["primary"]["D"]
+        color = "#009e73" if yi == len(runs) else "#555555"
+        a.errorbar(t["mean"], y, xerr=[[t["mean"] - t["lo"]], [t["hi"] - t["mean"]]], fmt="o", color=color, ms=4.5,
+                   capsize=2, lw=1.1)
+        a.errorbar(d["mean"], y - 0.3, xerr=[[d["mean"] - d["lo"]], [d["hi"] - d["mean"]]], fmt="o", mfc="white",
+                   color=color, ms=3.5, capsize=2, lw=0.7)
+    a.axvline(0, color="k", lw=0.6, ls=":")
+    a.set_yticks(range(len(labels)), list(reversed(labels)), fontsize=6.3)
+    a.set_ylim(-0.7, len(labels) - 0.5)
+    a.set_xlabel("B − L, AUC (filled: test, open: dev)")
+    a.set_title("(a) B vs one long pass, truncated")
+    pcs = []
+    for ds in ("techqa", "expertqalong"):
+        for m in MODELS:
+            pc = pd.DataFrame(json.load(open(FEAT / f"{m}_{ds}_K5" / "meta_long.json"))["per_case"])
+            pcs.append(pc.assign(model=m, dataset=ds))
+    pc = pd.concat(pcs, ignore_index=True)
+    ticks = [2000, 4000, 8000, 16000, 32000]
+    for ax, col, lab in ((b, "peak_gb", "peak GPU memory (GB)"), (c, "seconds", "seconds per response")):
+        for m, color in zip(MODELS, ("#0072b2", "#e69f00")):
+            s = pc[pc.model == m]
+            ax.scatter(s["seq_len"], s[col], s=3, alpha=0.35, color=color, lw=0,
+                       label=MODELS[m].replace("2.5", "") if ax is c else None)
+        ax.axvline(8192, color="#e69f00", lw=0.7, ls="--")
+        ax.axvspan(1000, 2200, color="#009e73", alpha=0.08, lw=0)
+        ax.set_xscale("log")
+        ax.set_xlim(1200, 40000)
+        ax.set_xticks(ticks, [f"{t // 1000}k" for t in ticks])
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_xlabel("sequence length of L's pass (tokens)")
+        ax.set_ylabel(lab)
+    b.text(8192 * 1.05, b.get_ylim()[1] * 0.99, "SmolLM2\nlimit", fontsize=5.5, va="top", color="#b07000")
+    b.text(1280, b.get_ylim()[1] * 0.99, "B's\npasses", fontsize=5.5, va="top", color="#006b4f")
+    c.legend(frameon=False, loc="upper left", fontsize=6, markerscale=3, bbox_to_anchor=(0.12, 1.0))
+    b.set_title("(b) L: memory grows with length")
+    c.set_title("(c) L: time per response")
+    fig.subplots_adjust(wspace=0.5)
+    save(fig, "fig5_e1_long_pass_test")
 
 
 if __name__ == "__main__":
@@ -331,6 +419,7 @@ if __name__ == "__main__":
         fig0_test(tdir)
         fig2_test(tdir)
         fig1_test(tdir)
+        fig5_e1_test(tdir)
     else:
         fig2()
         fig3()

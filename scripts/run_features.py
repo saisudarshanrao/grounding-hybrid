@@ -16,6 +16,8 @@ Usage:
     python scripts/run_features.py ... --redeep   # ReDeEP scores (extraction only)
     python scripts/run_features.py ... --long --datasets techqa expertqalong   # E1: one long pass (baseline L);
                                                   # with --smoke, the E1 checks (a) and (b) run first
+    python scripts/run_features.py ... --placebo --datasets techqa   # E2: placebo reading (donor windows 2..K);
+                                                  # with --smoke, the E2 checks (a) and (c) run first
 """
 import argparse
 import os
@@ -57,6 +59,20 @@ def run_worker(model, args, cfg):
                    "--model", model, "--outroot", args.outroot] + (["--max_cases", "20"] if args.smoke else [])
             if subprocess.run(cmd).returncode != 0:
                 print(f"[error] long-pass extraction failed for {tag}", flush=True)
+                failed.append(tag)
+            continue
+        if args.placebo:                    # step E2: placebo reading (B with a donor's windows 2..K)
+            if args.smoke:                  # checks (a) and (c) first, on the same 20 cases
+                chk = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "placebo_check.py"), "--canon_dir",
+                       str(canon), "--model", model, "--n", "20", "--out", str(Path(args.outroot) / tag / "placebo_check.json")]
+                if subprocess.run(chk).returncode != 0:
+                    print(f"[error] E2 checks FAILED for {tag}", flush=True)
+                    failed.append(tag)
+                    continue
+            cmd = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "extract_placebo.py"), "--canon_dir",
+                   str(canon), "--model", model, "--outroot", args.outroot] + (["--max_cases", "20"] if args.smoke else [])
+            if subprocess.run(cmd).returncode != 0:
+                print(f"[error] placebo extraction failed for {tag}", flush=True)
                 failed.append(tag)
             continue
         cmd = [sys.executable, str(ROOT / "scripts" / "extract_features.py"), "--canon_dir", str(canon),
@@ -107,6 +123,7 @@ def main():
     ap.add_argument("--redeep", action="store_true", help="also extract ReDeEP scores (extraction only)")
     ap.add_argument("--freq", action="store_true", help="also extract frequency-aware features (extraction only)")
     ap.add_argument("--long", action="store_true", help="E1: one long pass per response (extraction only)")
+    ap.add_argument("--placebo", action="store_true", help="E2: placebo reading, donor windows 2..K (extraction only)")
     ap.add_argument("--max_ctx_tokens", type=int, default=0, help="controlled truncation window")
     ap.add_argument("--overlap", type=int, default=256)
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
@@ -133,6 +150,7 @@ def main():
         cmd += ["--redeep"] if args.redeep else []
         cmd += ["--freq"] if args.freq else []
         cmd += ["--long"] if args.long else []
+        cmd += ["--placebo"] if args.placebo else []
         cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
         cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)] if args.max_ctx_tokens else []
         short = model.split("/")[-1]

@@ -253,3 +253,26 @@ class SharedExtractor:
                 ws = np.stack(ws)
                 r.update(lookback_max=ws.max(0), lookback_mean=ws.mean(0), n_windows=len(spans))
         return out
+
+    @torch.no_grad()
+    def extract_placebo(self, case, donor):
+        """Step E2 placebo reading: window 1 is the case's own (as extract), windows 2..K are the DONOR's windows
+        2..K (K = the case's own number of windows; the donor's are reused in order if it has fewer), each read with
+        the case's question and answer. With donor = case this is exactly B (extract with chunked=True)."""
+        enc = self.encode(case)
+        if enc is None:
+            return []
+        pid, aid, sents = enc
+        tlp, lb, _, _, _ = self._pass(pid, aid)
+        per_window = [[lb[:, :, tk].mean(-1)] for _, tk in sents]
+        k_own = len(self.windows(case))
+        dspans = self.windows(donor)[1:] if k_own > 1 else []
+        for i in range(k_own - 1):
+            cs, ce = dspans[i % len(dspans)]
+            pw = self.tok(PROMPT.format(ctx=donor.context[cs:ce], query=case.query)).input_ids
+            _, lbw, _, _, _ = self._pass(pw, aid, first=False)
+            for k, (_, tk) in enumerate(sents):
+                per_window[k].append(lbw[:, :, tk].mean(-1))
+        return [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()), lookback=ws[0],
+                     lookback_placebo_max=np.stack(ws).max(0), n_windows=k_own)
+                for (j, tk), ws in zip(sents, per_window)]
