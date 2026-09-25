@@ -26,6 +26,9 @@ MODE (set below):
                                    >= 9000 characters, 466 cases): a second real long-context set.
   "freq-smoke" / "freq"            step 7c: frequency-aware attention baseline (+ Lookback), RAGTruth,
                                    TofuEval, RAGBench, extraction only; evaluate on the Mac.
+  "longfreq-smoke" / "longfreq"    step 7d: frequency-aware attention on TechQA + ExpertQA-long: GASP's
+                                   deterministic sampling/scoring again (to rebuild the same cases), then
+                                   one --freq pass per case (window 1); evaluate on the Mac.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -37,7 +40,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq (each also as -smoke)
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq (each also as -smoke)
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -116,8 +119,10 @@ elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-s
         MODE.replace("-smoke", ""), "")
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
-elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa"):
-    lds = {"techqa": "techqa", "expertqa": "expertqalong"}[MODE.replace("-smoke", "")]
+elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-smoke", "longfreq"):
+    lds = {"techqa": "techqa", "expertqa": "expertqalong",
+           "longfreq": "techqa expertqalong"}[MODE.replace("-smoke", "")]
+    feat_flags = "--freq" if MODE.startswith("longfreq") else "--chunked --redeep"
     import torch
     import yaml
     models = yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]
@@ -130,7 +135,7 @@ elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa"):
         procs.append(subprocess.Popen(cmd, shell=True, cwd=REPO_DIR, env=env))
     if any(p.wait() for p in procs):
         raise RuntimeError("a GASP run failed; see the log above")
-    sh(f"python scripts/run_features.py {flag} --chunked --redeep --datasets {lds} "
+    sh(f"python scripts/run_features.py {flag} {feat_flags} --datasets {lds} "
        f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
 else:
     raise ValueError(f"unknown MODE {MODE!r}")

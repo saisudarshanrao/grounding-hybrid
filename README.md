@@ -144,8 +144,14 @@ Frequency-aware attention (arXiv 2602.18145, authors' cutoff 0.45) from the same
 against an authors-style reference implementation (difference 0.0).
 On Kaggle: `MODE = "freq-smoke"`, then `"freq"`; then `python -W ignore scripts/freq_check.py` on the Mac.
 
-- [ ] Kaggle: `MODE = "freq"` completes
-- [ ] Dev: FA vs Lookback (decision rule in CLAUDE.md, fixed before the run)
+- [x] Kaggle: `MODE = "freq"` completes (Version 9)
+- [x] Dev: FA vs Lookback: on par (pooled +0.009, n.s.) -> additional baseline
+- [ ] Kaggle: `MODE = "longfreq"` (FA on TechQA + ExpertQA-long, so every frozen baseline covers every dataset)
+
+## Freeze (25 Sep 2026) and the single test look
+
+Method, baselines, datasets and metrics are frozen (CLAUDE.md "FREEZE record"). `scripts/test_look.py` scores
+every frozen detector once on GASP's test split.
 
 `python scripts/cost_table.py` gives seconds per case for every detector (RQ3 cost).
 
