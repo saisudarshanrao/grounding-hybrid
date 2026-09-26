@@ -407,6 +407,72 @@ def fig5_e1_test(tdir):
     save(fig, "fig5_e1_long_pass_test")
 
 
+def fig6_mechanism_test(tdir):
+    """Steps E2 and E3 on test: (a) TechQA truncated sentences, window 1 vs B vs the placebo Bp (windows 2..K from
+    another document), B - Bp above each pair; (b) B - Bp by where RAGBench's annotated evidence lies; (c) if E3 ran:
+    evidence displaced out of window 1, original vs displaced window 1 vs displaced B, Bd - w1d above each group."""
+    f2, f3 = tdir / "e2_test_look_P5.json", tdir / "e3_test_look_P6.json"
+    if not f2.exists():
+        return
+    e2 = json.load(open(f2))
+    e3 = json.load(open(f3)) if f3.exists() else None
+    fig, axes = plt.subplots(1, 3 if e3 else 2, figsize=(7.6 if e3 else 5.4, 2.4),
+                             gridspec_kw={"width_ratios": [1, 1.1, 1.5] if e3 else [1, 1.1]})
+    a, b = axes[0], axes[1]
+    rows = [r for r in e2["table"] if r["rows"] == "truncated"]
+    x, w = np.arange(len(rows)), 0.26
+    for i, (k, lab, color, style) in enumerate([("window 1", "window 1", "#56b4e9", dict(edgecolor="k", lw=0.3)),
+                                               ("B", "B (ours)", "#009e73", OURS),
+                                               ("Bp (placebo)", "placebo", "#bbbbbb", dict(edgecolor="k", lw=0.3))]):
+        a.bar(x + (i - 1) * w, [r[k] for r in rows], w, color=color, label=lab, **style)
+    for xi, r in zip(x, rows):
+        d = e2["secondary"][f"{r['model']} | B - Bp"]
+        a.text(xi, max(r["B"], r["Bp (placebo)"]) + 0.012, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}", ha="center",
+               fontsize=6, color="#006b4f", fontweight="bold" if d["sig"] else "normal")
+    a.set_xticks(x, [r["model"].replace("2.5", "") for r in rows], fontsize=6.5)
+    a.set_ylim(0.5, 0.85)
+    a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
+    a.set_title("(a) TechQA: B vs its placebo")
+    a.legend(frameon=False, loc="upper left", fontsize=5.8, ncol=3, columnspacing=0.8, handlelength=1.2)
+    groups = ["all out", "partly out", "in window 1"]
+    for j, (m, color) in enumerate(zip(("Qwen2.5", "SmolLM2"), ("#0072b2", "#e69f00"))):
+        ev = {r["group"]: r["B_minus_Bp"] for r in e2["evidence"] if r["model"].startswith(m)}
+        ys = np.arange(len(groups)) + (0.15 if j == 0 else -0.15)
+        for y, g in zip(ys, groups):
+            if g in ev:
+                d = ev[g]
+                b.errorbar(d["mean"], y, xerr=[[d["mean"] - d["lo"]], [d["hi"] - d["mean"]]], fmt="o", color=color,
+                           ms=4, capsize=2, lw=1, label=m if g == groups[0] else None)
+    b.axvline(0, color="k", lw=0.6, ls=":")
+    b.set_yticks(range(len(groups)), ["all evidence\nbeyond window 1", "partly\nbeyond", "all inside\nwindow 1"],
+                 fontsize=6.3)
+    b.invert_yaxis()
+    b.set_xlabel("B − placebo, AUC (95% interval)")
+    b.set_title("(b) by where the evidence lies")
+    b.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, fontsize=6)
+    if e3:
+        c = axes[2]
+        rows3 = [r for r in e3["table"] if r["rows"] == "all"]
+        x3 = np.arange(len(rows3))
+        for i, (k, lab, color, style) in enumerate([("original", "original context", "#dddddd", dict(edgecolor="k", lw=0.3)),
+                                                   ("window 1 (displaced)", "window 1, displaced", "#56b4e9",
+                                                    dict(edgecolor="k", lw=0.3)),
+                                                   ("B (displaced)", "B, displaced", "#009e73", OURS)]):
+            c.bar(x3 + (i - 1) * w, [r[k] for r in rows3], w, color=color, label=lab, **style)
+        for xi, r in zip(x3, rows3):
+            d = e3["secondary"][f"{r['model']} {r['dataset']} | Bd - w1d"]
+            c.text(xi, max(r["original"], r["B (displaced)"], r["window 1 (displaced)"]) + 0.012,
+                   f"{d['mean']:+.3f}{'*' if d['sig'] else ''}", ha="center", fontsize=6, color="#006b4f",
+                   fontweight="bold" if d["sig"] else "normal")
+        c.set_xticks(x3, [f"{DS_NAME[r['dataset']]}\n{r['model'].replace('2.5', '')}" for r in rows3], fontsize=6.3)
+        c.set_ylim(0.5, 0.95)
+        c.set_ylabel(f"{SPLIT} AUC")
+        c.set_title("(c) evidence moved out of window 1")
+        c.legend(frameon=False, loc="upper left", fontsize=5.8, ncol=3, columnspacing=0.8, handlelength=1.2)
+    fig.subplots_adjust(wspace=0.55)
+    save(fig, "fig6_mechanism_test")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", nargs="?", const=str(ROOT / "results" / "test"), default=None,
@@ -420,6 +486,7 @@ if __name__ == "__main__":
         fig2_test(tdir)
         fig1_test(tdir)
         fig5_e1_test(tdir)
+        fig6_mechanism_test(tdir)
     else:
         fig2()
         fig3()
