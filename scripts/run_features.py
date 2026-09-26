@@ -31,6 +31,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# steps E1-E3: flag -> (check script, run first on 20 cases in a smoke; extraction script; step)
+STEPS = {"long": ("longpass_check.py", "extract_long.py", "E1"),
+         "placebo": ("placebo_check.py", "extract_placebo.py", "E2"),
+         "displace": ("displace_check.py", "extract_displaced.py", "E3")}
+
 
 def tag_for(model, dataset, k):
     return f"{model.split('/')[-1]}_{dataset}_K{k}"
@@ -47,32 +52,20 @@ def run_worker(model, args, cfg):
             print(f"[missing] {canon}: no GASP run to extract from", flush=True)
             continue
         print(f"\n=== {tag} ===", flush=True)
-        if args.long:                       # step E1: one long pass per response (baseline L)
-            if args.smoke:                  # checks (a) and (b) first, on the same 20 cases
-                chk = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "longpass_check.py"), "--canon_dir",
-                       str(canon), "--model", model, "--n", "20", "--out", str(Path(args.outroot) / tag / "longpass_check.json")]
+        step = next((s for s in STEPS if getattr(args, s)), None)
+        if step:                            # steps E1-E3: their own check and extraction scripts
+            check, extract, name = STEPS[step]
+            if args.smoke:                  # the step's checks first, on the same 20 cases
+                chk = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / check), "--canon_dir", str(canon),
+                       "--model", model, "--n", "20", "--out", str(Path(args.outroot) / tag / check.replace(".py", ".json"))]
                 if subprocess.run(chk).returncode != 0:
-                    print(f"[error] E1 checks FAILED for {tag}", flush=True)
+                    print(f"[error] {name} checks FAILED for {tag}", flush=True)
                     failed.append(tag)
                     continue
-            cmd = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "extract_long.py"), "--canon_dir", str(canon),
+            cmd = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / extract), "--canon_dir", str(canon),
                    "--model", model, "--outroot", args.outroot] + (["--max_cases", "20"] if args.smoke else [])
             if subprocess.run(cmd).returncode != 0:
-                print(f"[error] long-pass extraction failed for {tag}", flush=True)
-                failed.append(tag)
-            continue
-        if args.placebo:                    # step E2: placebo reading (B with a donor's windows 2..K)
-            if args.smoke:                  # checks (a) and (c) first, on the same 20 cases
-                chk = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "placebo_check.py"), "--canon_dir",
-                       str(canon), "--model", model, "--n", "20", "--out", str(Path(args.outroot) / tag / "placebo_check.json")]
-                if subprocess.run(chk).returncode != 0:
-                    print(f"[error] E2 checks FAILED for {tag}", flush=True)
-                    failed.append(tag)
-                    continue
-            cmd = [sys.executable, "-W", "ignore", str(ROOT / "scripts" / "extract_placebo.py"), "--canon_dir",
-                   str(canon), "--model", model, "--outroot", args.outroot] + (["--max_cases", "20"] if args.smoke else [])
-            if subprocess.run(cmd).returncode != 0:
-                print(f"[error] placebo extraction failed for {tag}", flush=True)
+                print(f"[error] {name} extraction failed for {tag}", flush=True)
                 failed.append(tag)
             continue
         cmd = [sys.executable, str(ROOT / "scripts" / "extract_features.py"), "--canon_dir", str(canon),
@@ -124,6 +117,7 @@ def main():
     ap.add_argument("--freq", action="store_true", help="also extract frequency-aware features (extraction only)")
     ap.add_argument("--long", action="store_true", help="E1: one long pass per response (extraction only)")
     ap.add_argument("--placebo", action="store_true", help="E2: placebo reading, donor windows 2..K (extraction only)")
+    ap.add_argument("--displace", action="store_true", help="E3: evidence moved out of window 1 (extraction only)")
     ap.add_argument("--max_ctx_tokens", type=int, default=0, help="controlled truncation window")
     ap.add_argument("--overlap", type=int, default=256)
     ap.add_argument("--worker", default=None, help=argparse.SUPPRESS)
@@ -149,8 +143,7 @@ def main():
         cmd += (["--smoke"] if args.smoke else []) + (["--chunked"] if args.chunked else [])
         cmd += ["--redeep"] if args.redeep else []
         cmd += ["--freq"] if args.freq else []
-        cmd += ["--long"] if args.long else []
-        cmd += ["--placebo"] if args.placebo else []
+        cmd += [f"--{s}" for s in STEPS if getattr(args, s)]
         cmd += (["--no_eval"] if args.no_eval else []) + (["--datasets"] + args.datasets if args.datasets else [])
         cmd += ["--max_ctx_tokens", str(args.max_ctx_tokens), "--overlap", str(args.overlap)] if args.max_ctx_tokens else []
         short = model.split("/")[-1]

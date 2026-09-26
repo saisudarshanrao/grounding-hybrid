@@ -35,6 +35,10 @@ MODE (set below):
   "placebo-smoke" / "placebo"      step E2: placebo reading on TechQA, B with windows 2..K taken from a donor
                                    case (same split, other source); GASP reruns to rebuild the cases. The smoke
                                    runs the E2 checks (a) and (c) first.
+  "displace-smoke" / "displace"    step E3: evidence displacement on RAGTruth + RAGBench (responses whose context
+                                   fits one window, moved behind 1808 tokens of other cases' contexts), read with
+                                   the frozen windowed extractor; uses the attached GASP runs (no rerun). The smoke
+                                   runs the E3 checks (a), (b) and (d) first.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -46,7 +50,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo (+ -smoke)
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo, displace (+ -smoke)
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -114,14 +118,14 @@ flag = "--smoke" if MODE.endswith("smoke") else ""
 if MODE in ("smoke", "full"):
     sh(f"python scripts/reproduce_gasp.py {flag} --outroot {OUTROOT}/gasp_repro", cwd=REPO_DIR)
 elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-smoke", "trunc",
-              "redeep-smoke", "redeep", "freq-smoke", "freq"):
+              "redeep-smoke", "redeep", "freq-smoke", "freq", "displace-smoke", "displace"):
     found = [d for d in sorted(glob.glob("/kaggle/input/**/canon_results", recursive=True)) if "_smoke" not in d]
     if not found:
         raise RuntimeError("attach the week 1 GASP notebook output as input (see the notes at the top)")
     print("GASP runs read from", found[0])
     extra = {"chunked": "--chunked --datasets ragbench",
              "trunc": "--chunked --max_ctx_tokens 512 --overlap 128 --datasets ragtruth tofueval",
-             "redeep": "--redeep", "freq": "--freq"}.get(
+             "redeep": "--redeep", "freq": "--freq", "displace": "--displace --datasets ragtruth ragbench"}.get(
         MODE.replace("-smoke", ""), "")
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)

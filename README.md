@@ -36,6 +36,7 @@ src/grounding_hybrid/
   longpass.py                baseline L: one long pass with memory-efficient attention, recomputing only the
                              answer rows of attention (for contexts that do not fit eager attention)
   placebo.py                 donor choice for the placebo reading (same split, another source, >= K windows)
+  displace.py                evidence displacement: the context moved behind 1808 tokens of other cases' contexts
 
 scripts/ -- pipeline
   env_check.py               device and versions
@@ -48,6 +49,8 @@ scripts/ -- pipeline
   longpass_check.py          checks for baseline L: recomputed answer rows = eager weights; window 1 = frozen extractor
   extract_placebo.py         placebo reading Bp for one GASP run: B with windows 2..K taken from a donor case
   placebo_check.py           checks for Bp: with the case as its own donor, Bp = B exactly; the donor rule holds
+  extract_displaced.py       window 1 and B on the displaced contexts (RAGTruth, RAGBench; contexts that fit)
+  displace_check.py          checks: window 1 holds no original text; empty prefix = original reading; donor rule
 
 scripts/ -- the test look, figures, bookkeeping
   test_look.py               every frozen detector, fit on dev, scored once on test (--eval_on devhalf = dry run)
@@ -70,6 +73,7 @@ scripts/ -- dev-only analyses (grouped CV on the dev split; never touch test)
   ablation_layers.py         which layers and heads carry the Lookback signal
   e1_long_pass.py            B vs one long single pass (baseline L) on the long sets (--eval_on dev; test once after)
   e2_placebo.py              B vs its placebo Bp on TechQA: does B's gain need the real context? (dev; test once after)
+  e3_displace.py             B vs window 1 with the evidence moved out of window 1 (dev; test once after)
   mac_smoke_test.py          GASP on one toy example (Mac check)
 ```
 
@@ -95,6 +99,7 @@ The runner clones this repository, so every run uses exactly the pushed code.
 | `longfreq` | frequency-aware attention on TechQA + ExpertQA-long | - |
 | `longpass` | baseline L (one long pass) on TechQA + ExpertQA-long; the smoke runs its checks first | - |
 | `placebo` | placebo reading Bp on TechQA (donor windows 2..K); the smoke runs its checks first | - |
+| `displace` | evidence displacement on RAGTruth + RAGBench (window 1 and B); the smoke runs its checks first | `full` output |
 
 "`full` output" = the `results/gasp_repro/canon_results` folder of a `full` run, attached to the notebook as input
 (for example as a private Kaggle dataset); the runner finds it automatically. GASP's sampling and scoring are

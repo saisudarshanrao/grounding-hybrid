@@ -8,6 +8,7 @@ within ~0.01 of GASP's), and two cross-file checks made here:
   lb=   - max |lookback - lookback of the base file| (features.npz; for the long sets, the
           chunked_redeep file): 0 means window 1 is exactly the same reading as the base file
 Controlled-truncation files (ctx512) read a shorter window on purpose, so lb= is not expected to be 0.
+The placebo file (features_placebo.npz, step E2) reads window 1 exactly as the base file, so its lb= must be 0.
 The long-pass file (features_long.npz, step E1) reads more context on purpose; its lb= is taken only on
 responses whose whole context fits GASP's 1800 tokens (the same text as window 1, read with a different
 attention kernel), where it must stay within the E1 check's 1e-3.
@@ -39,9 +40,11 @@ VERSIONS = {
     9: ("352495157", "64ab33e + runtime patch (= 88668d9)", "frequency-aware attention (MODE freq)"),
     10: ("352565636", "47b04f9", "frequency-aware attention, long sets (MODE longfreq)"),
     11: ("352758371", "561950f", "one long pass (baseline L, step E1), long sets (MODE longpass)"),
+    12: ("352812136", "c93d4e0", "placebo reading (step E2), TechQA (MODE placebo)"),
 }
 LONG = ("techqa", "expertqalong")
 LONGPASS_VERSION = 11
+PLACEBO_VERSION = 12
 
 
 def version_of(ds, name):
@@ -51,6 +54,8 @@ def version_of(ds, name):
         return 10 if ds in LONG else 9
     if name == "features_long.npz":
         return LONGPASS_VERSION
+    if name == "features_placebo.npz":
+        return PLACEBO_VERSION
     return {"features.npz": 2, "features_chunked.npz": 3, "features_chunked_ctx512.npz": 4,
             "features_redeep.npz": 5}.get(name, {"techqa": 6, "expertqalong": 7}.get(ds))
 
@@ -83,6 +88,7 @@ def main():
                   f"{np.abs(z['lookback'][fit].astype(np.float32) - base[fit].astype(np.float32)).max():.1e}")
             ok = a["covered"] == a["gasp_rows"] and a["extra"] == 0 and a["n_tok_match"] and a.get("nan_rows", 0) == 0
             win = ("one long pass (up to %d positions)" % meta["max_positions"] if long else
+                   f"{meta['max_ctx_tokens']}/{meta['overlap']}, windows 2..K from a donor" if "placebo" in f.name else
                    f"{meta.get('max_ctx_tokens', 1800)}/{meta.get('overlap', '-')}" if meta.get("chunked") else "1800 (GASP view)")
             dlogp = a["logprob_absdiff_mean_fits_1800" if long else "logprob_absdiff_mean"]
             dlogp = "n/a (no context fits)" if dlogp is None else f"{dlogp:.4f}" + (" (fits 1800)" if long else "")
