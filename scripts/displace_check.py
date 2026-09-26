@@ -1,7 +1,8 @@
 """Step E3 checks, written before the full run (CLAUDE.md, "E3 record"). Exit code 1 if any check fails.
 
   (a) for EVERY included response: the displaced context's window 1 ends before the original context starts
-      (char offsets), and the prefix has 1808 tokens
+      (char offsets), and the prefix re-tokenized on its own has 1808 +- 2 tokens (it is cut at its 1808th token;
+      byte-level BPE can merge the last pieces at the cut)
   (b) with an empty prefix, the displaced reading equals the frozen reading of the original case (lookback,
       lookback_max, log-probs; max |diff| <= 1e-6), on the first --n included responses
   (d) every donor of every included response has a different source_id and the same split
@@ -21,7 +22,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from grounding_hybrid.displace import PREFIX_TOKENS, build_prefixes, displaced, included  # noqa: E402
+from grounding_hybrid.displace import PREFIX_TOKENS, PREFIX_TOL, build_prefixes, displaced, included  # noqa: E402
 from grounding_hybrid.extractor import SharedExtractor  # noqa: E402
 from grounding_hybrid.gasp_bridge import load_cases  # noqa: E402
 from grounding_hybrid.placebo import case_splits  # noqa: E402
@@ -53,10 +54,10 @@ def main():
         after += ex.windows(displaced(c, prefix))[0][1] <= len(prefix)
         nt = len(ex.tok(prefix, add_special_tokens=False).input_ids)
         ntoks.append(nt)
-        ntok_ok += nt == PREFIX_TOKENS
+        ntok_ok += abs(nt - PREFIX_TOKENS) <= PREFIX_TOL
         donors_ok += all(by_id[d].source_id != c.source_id and split_of[d] == split_of[c.case_id] for d in used)
     rep["a"] = dict(original_after_window1=after, prefix_tokens_ok=ntok_ok, prefix_tokens_min=min(ntoks),
-                    prefix_tokens_max=max(ntoks), **{"pass": bool(after == len(keep) and ntok_ok == len(keep))})
+                    prefix_tokens_max=max(ntoks), prefix_tokens_not_1808=sum(n != PREFIX_TOKENS for n in ntoks), **{"pass": bool(after == len(keep) and ntok_ok == len(keep))})
     rep["d"] = dict(donor_rule_ok=donors_ok, **{"pass": bool(donors_ok == len(keep))})
     print("(a)", json.dumps(rep["a"]), "\n(d)", json.dumps(rep["d"]), flush=True)
 

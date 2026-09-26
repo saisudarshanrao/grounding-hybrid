@@ -6,7 +6,7 @@ cases' contexts (src/grounding_hybrid/displace.py) and read by the frozen extrac
   lookback_max  B over the displaced context (1800/256 windows, max per layer x head): Bd
 The original reading (orig) is the frozen features.npz. Rows are keyed by (case_id, sent_idx) and cover the included
 responses only; the run is gated on alignment (every GASP sentence of those responses covered, token counts equal,
-no NaN), on the displacement (the original starts after window 1 ends, prefix of 1808 tokens) and on the donor rule
+no NaN), on the displacement (the original starts after window 1 ends, prefix of 1808 +- 2 tokens) and on the donor rule
 (other source, same split).
 
 Output: <outroot>/<TAG>/features_displaced.npz (+ meta_displaced.json); with --max_cases N (first N included
@@ -28,7 +28,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from grounding_hybrid.displace import PREFIX_TOKENS, build_prefixes, displaced, included  # noqa: E402
+from grounding_hybrid.displace import PREFIX_TOKENS, PREFIX_TOL, build_prefixes, displaced, included  # noqa: E402
 from grounding_hybrid.gasp_bridge import load_cases, load_sentences  # noqa: E402
 from grounding_hybrid.placebo import case_splits  # noqa: E402
 
@@ -106,7 +106,8 @@ def main():
     align = dict(gasp_rows=len(sent), covered=covered, extra=len(rows) - covered, n_tok_match=ntok_ok, nan_rows=nan_rows)
     disp = dict(responses=len(checks),
                 original_after_window1=sum(c["window1_end"] <= len(prefixes[c["case_id"]][0]) for c in checks),
-                prefix_tokens_ok=sum(c["prefix_tokens"] == PREFIX_TOKENS for c in checks),
+                prefix_tokens_ok=sum(abs(c["prefix_tokens"] - PREFIX_TOKENS) <= PREFIX_TOL for c in checks),
+                prefix_tokens_not_1808=sum(c["prefix_tokens"] != PREFIX_TOKENS for c in checks),
                 donor_rule_ok=sum(c["donor_rule"] for c in checks),
                 windows=dict(zip(*np.unique(arrays["n_windows"], return_counts=True))) if rows else {})
     disp["windows"] = {int(k): int(v) for k, v in disp["windows"].items()}

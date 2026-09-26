@@ -12,6 +12,10 @@ import dataclasses
 import numpy as np
 
 PREFIX_TOKENS = 1808
+# The prefix is cut at its 1808th token; re-tokenized on its own, a byte-level BPE tokenizer (SmolLM2) can merge the
+# last pieces at the cut, so checks accept 1808 +- PREFIX_TOL. What matters, window 1 holding no original text, is
+# checked exactly.
+PREFIX_TOL = 2
 SEP = "\n\n"
 
 
