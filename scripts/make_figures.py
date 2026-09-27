@@ -264,7 +264,7 @@ def fig0_test(tdir):
     r = r[(r.level == "span") & (r.rows == "truncated")]
     cmp = json.load(open(tdir / "test_look.json"))["comparisons"]
     e1, e1_dev = e1_results(tdir)
-    fig, (a, b) = plt.subplots(1, 2, figsize=(7.6, 2.6), gridspec_kw={"width_ratios": [1.5, 1]})
+    fig, (a, b) = plt.subplots(1, 2, figsize=(7.6, 3.0), gridspec_kw={"width_ratios": [1.5, 1]})
     runs = [(ds, m) for ds in ("techqa", "expertqalong") for m in MODELS]
     dets = [("GASP+base", "GASP"), ("Lookback [cv]", "Lookback (window 1)")]
     dets += [("L", "one long pass (L)")] if e1 else []
@@ -288,7 +288,7 @@ def fig0_test(tdir):
     a.set_ylim(0.5, 0.9)
     a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
     a.set_title("(a) Long contexts: B vs the baselines")
-    a.legend(frameon=False, loc="upper left", ncol=len(dets), fontsize=5.8, columnspacing=0.8, handlelength=1.4)
+    a.legend(frameon=False, loc="upper left", ncol=2, fontsize=6, columnspacing=1.0, handlelength=1.4)
     dev_p1 = json.load(open(GATING / "dev_coverage_checks_chunked_ctx512.json"))["pooled"]["ALL 4 runs | max"]
     checks = [("P3  Lookback \u2212 GASP\n5 datasets \u00d7 2 scorers", cmp["POOLED all 5 datasets x 2 | Lookback - GASP+base"], None),
               ("P2  B \u2212 Lookback\nlong contexts, truncated", cmp["POOLED real long-context (TechQA, ExpertQA-long x 2) truncated rows | B - Lookback"], None),
@@ -296,6 +296,12 @@ def fig0_test(tdir):
                dict(mean=dev_p1["diff"], lo=dev_p1["lo"], hi=dev_p1["hi"]))]
     if e1:          # P4 (step E1, after the freeze): a tie reads "matches"
         checks.append(("P4  B \u2212 one long pass\nlong contexts, truncated", e1["primary"]["D"], e1_dev["primary"]["D"]))
+    for tag, f_test, f_dev, key, label in (
+            ("P5", "e2_test_look_P5.json", "e2/e2_dev.json", "D2", "B \u2212 placebo\nTechQA, truncated"),
+            ("P6", "e3_test_look_P6.json", "e3/e3_dev.json", "D3", "B \u2212 window 1\nevidence displaced")):
+        if (tdir / f_test).exists() and (ROOT / "results" / f_dev).exists():     # steps E2, E3 (after the freeze)
+            checks.append((f"{tag}  {label}", json.load(open(tdir / f_test))["primary"][key],
+                           json.load(open(ROOT / "results" / f_dev))["primary"][key]))
     for yi, (lab, t, dv) in enumerate(checks):
         y = len(checks) - 1 - yi
         color = "#009e73" if "B" in lab.split("\n")[0] else COL["Lookback (S3)"]
@@ -416,7 +422,7 @@ def fig6_mechanism_test(tdir):
         return
     e2 = json.load(open(f2))
     e3 = json.load(open(f3)) if f3.exists() else None
-    fig, axes = plt.subplots(1, 3 if e3 else 2, figsize=(7.6 if e3 else 5.4, 2.4),
+    fig, axes = plt.subplots(1, 3 if e3 else 2, figsize=(8.6 if e3 else 5.8, 2.5),
                              gridspec_kw={"width_ratios": [1, 1.1, 1.5] if e3 else [1, 1.1]})
     a, b = axes[0], axes[1]
     rows = [r for r in e2["table"] if r["rows"] == "truncated"]
@@ -433,7 +439,8 @@ def fig6_mechanism_test(tdir):
     a.set_ylim(0.5, 0.85)
     a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
     a.set_title("(a) TechQA: B vs its placebo")
-    a.legend(frameon=False, loc="upper left", fontsize=5.8, ncol=3, columnspacing=0.8, handlelength=1.2)
+    a.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.12), fontsize=6, ncol=3, columnspacing=0.8,
+             handlelength=1.2)
     groups = ["all out", "partly out", "in window 1"]
     for j, (m, color) in enumerate(zip(("Qwen2.5", "SmolLM2"), ("#0072b2", "#e69f00"))):
         ev = {r["group"]: r["B_minus_Bp"] for r in e2["evidence"] if r["model"].startswith(m)}
@@ -444,8 +451,7 @@ def fig6_mechanism_test(tdir):
                 b.errorbar(d["mean"], y, xerr=[[d["mean"] - d["lo"]], [d["hi"] - d["mean"]]], fmt="o", color=color,
                            ms=4, capsize=2, lw=1, label=m if g == groups[0] else None)
     b.axvline(0, color="k", lw=0.6, ls=":")
-    b.set_yticks(range(len(groups)), ["all evidence\nbeyond window 1", "partly\nbeyond", "all inside\nwindow 1"],
-                 fontsize=6.3)
+    b.set_yticks(range(len(groups)), ["all beyond\nwindow 1", "partly\nbeyond", "all inside\nwindow 1"], fontsize=6.3)
     b.invert_yaxis()
     b.set_xlabel("B − placebo, AUC (95% interval)")
     b.set_title("(b) by where the evidence lies")
@@ -469,7 +475,7 @@ def fig6_mechanism_test(tdir):
         c.set_ylabel(f"{SPLIT} AUC")
         c.set_title("(c) evidence moved out of window 1")
         c.legend(frameon=False, loc="upper left", fontsize=5.8, ncol=3, columnspacing=0.8, handlelength=1.2)
-    fig.subplots_adjust(wspace=0.55)
+    fig.subplots_adjust(wspace=0.62)
     save(fig, "fig6_mechanism_test")
 
 
