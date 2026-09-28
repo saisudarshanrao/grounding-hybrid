@@ -101,6 +101,28 @@ def sentence_max(tokens, sent_spans):
     return out
 
 
+def minicheck_probs(mc, doc, claims):
+    """MiniCheck's P(supported) per claim, as released (batches of 16 chunks). A case whose batch of long chunks runs
+    out of GPU memory is redone with batches of 8, 4, 2, 1 of the same chunks (only the grouping of chunks into forward
+    passes changes; each chunk is scored on its own and the max over chunks is unchanged). Returns (probs, batch)."""
+    import torch
+    inf = mc.model                                  # minicheck.inference.Inferencer
+    released = inf.batch_size
+    try:
+        while True:
+            try:
+                return mc.score(docs=[doc] * len(claims), claims=claims)[1], inf.batch_size
+            except torch.cuda.OutOfMemoryError:
+                if inf.batch_size == 1:
+                    raise
+                torch.cuda.empty_cache()
+                inf.batch_size //= 2
+                print(f"    MiniCheck out of GPU memory: retrying this case with batches of {inf.batch_size}",
+                      flush=True)
+    finally:
+        inf.batch_size = released
+
+
 def names(max_cases, i=0, n=1):
     suffix = f"_first{max_cases}" if max_cases else ""
     part = f".part{i}of{n}" if n > 1 else ""
@@ -116,6 +138,7 @@ def summarize(pc):
                 lettuce_multi_chunk_contexts=int(sum(n > 1 for n in pc["lettuce_chunks"])),
                 lettuce_max_chunks=int(max(pc["lettuce_chunks"])),
                 lettuce_truncated_contexts=int(sum(pc["lettuce_truncated"])),
+                minicheck_smaller_batch_cases=int(sum(b < 16 for b in pc.get("minicheck_batch", []))),
                 tokens_not_in_one_span=int(sum(pc["tokens_not_in_one_span"])))
 
 
@@ -138,17 +161,34 @@ def write_run(out, npz_name, meta_name, sent, mc, lt, meta):
     return meta["checks_pass"]
 
 
+def part_files(out, max_cases, merge):
+    """The part files to join: part<i>of<n> for i < n, or with "auto" every part file present (shards of different n
+    may be mixed, e.g. 1of4 + 0of8 + 4of8; the checks below require every case exactly once)."""
+    if merge != "auto":
+        return [names(max_cases, i, int(merge)) for i in range(int(merge))]
+    stem = names(max_cases)[0][:-len(".npz")]
+    found = sorted(out.glob(f"{stem}.part*of*.npz"))
+    return [(f.name, "meta_" + f.name[:-len(".npz")] + ".json") for f in found]
+
+
 def merge(args):
     ok = True
     for cd in args.canon_dirs:
         out = Path(args.outroot) / Path(cd).name
-        parts = [names(args.max_cases, i, args.merge) for i in range(args.merge)]
+        parts = part_files(out, args.max_cases, args.merge)
+        assert parts, f"no part files in {out}"
         zs = [np.load(out / f) for f, _ in parts]
         metas = [json.load(open(out / m)) for _, m in parts]
-        assert [m["shard"] for m in metas] == [f"{i}/{args.merge}" for i in range(args.merge)], "missing shard"
+        if args.merge != "auto":
+            n = int(args.merge)
+            assert [m["shard"] for m in metas] == [f"{i}/{n}" for i in range(n)], "missing shard"
         here = sha256(Path(cd) / "sentence.csv")
         assert all(m["sentence_csv_sha256"] == here for m in metas), f"parts were aligned to another sentence.csv: {cd}"
-        pc = {k: sum((m["per_case"][k] for m in metas), []) for k in metas[0]["per_case"]}
+        # parts written before the out-of-memory fallback have no minicheck_batch list: they all ran with the released 16
+        fill = {"minicheck_batch": 16}
+        keys = [k for k in metas[0]["per_case"]] + [k for m in metas for k in m["per_case"] if k not in metas[0]["per_case"]]
+        pc = {k: sum((m["per_case"].get(k, [fill.get(k)] * len(m["per_case"]["case_id"])) for m in metas), [])
+              for k in dict.fromkeys(keys)}
         ids = pc["case_id"]
         assert len(ids) == len(set(ids)) == metas[0]["cases_all_shards"], "shards overlap or miss cases"
         df = pd.concat([pd.DataFrame({k: z[k] for k in ("case_id", "sent_idx", "minicheck", "lettuce")}) for z in zs])
@@ -175,7 +215,8 @@ def main():
     ap.add_argument("--outroot", required=True)
     ap.add_argument("--max_cases", type=int, default=0)
     ap.add_argument("--shard", default="0/1", help="i/n: score every n-th case, starting at i")
-    ap.add_argument("--merge", type=int, default=0, help="join n shard files into checkers.npz (no scoring)")
+    ap.add_argument("--merge", default="", help="join shard files into checkers.npz (no scoring): n (part<i>of<n>, "
+                                                "i < n) or auto (every part file present)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--cache_dir", default=None, help="MiniCheck checkpoint folder")
     args = ap.parse_args()
@@ -203,7 +244,7 @@ def main():
     lt = Lettuce(device)
 
     scores = {}
-    pc = dict(case_id=[], minicheck_s=[], lettuce_s=[], lettuce_chunks=[], lettuce_truncated=[],
+    pc = dict(case_id=[], minicheck_s=[], lettuce_s=[], lettuce_chunks=[], lettuce_truncated=[], minicheck_batch=[],
               tokens_not_in_one_span=[])
     for k, cid in enumerate(ids):
         c = cases[cid]
@@ -211,7 +252,7 @@ def main():
         texts = [c["answer"][s:e].strip() for s, e in spans]
         keep = [j for j in range(len(spans)) if (cid, j) in scored]   # MiniCheck checks each sentence on its own:
         t0 = time.time()                                               # skipping spans GASP never scores changes
-        sup = mc.score(docs=[c["context"]] * len(keep), claims=[texts[j] for j in keep])[1] if keep else []
+        sup, batch = minicheck_probs(mc, c["context"], [texts[j] for j in keep]) if keep else ([], 16)
         mcs = dict(zip(keep, (1.0 - float(p) for p in sup)))          # no written row
         t1 = time.time()
         toks, n_chunks, trunc = lt.token_probs(c["context"], c["query"], c["answer"])
@@ -224,6 +265,7 @@ def main():
         pc["lettuce_s"].append(t2 - t1)
         pc["lettuce_chunks"].append(int(n_chunks))
         pc["lettuce_truncated"].append(int(trunc))
+        pc["minicheck_batch"].append(int(batch))
         pc["tokens_not_in_one_span"].append(sum(1 for ts, _, _ in toks if sum(s <= ts < e for s, e in spans) != 1))
         if (k + 1) % 25 == 0 or k + 1 == len(ids):
             print(f"  {k + 1}/{len(ids)} cases, MiniCheck {np.mean(pc['minicheck_s']):.2f} s, "

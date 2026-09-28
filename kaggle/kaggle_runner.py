@@ -54,7 +54,11 @@ MODE (set below):
                                    re-reads every 500-word chunk per sentence: ~11 T4-hours in all). TechQA and
                                    ExpertQA-long are cut into 4 shards of cases, one per T4 of the two versions; the short
                                    sets and TRIVIA+-long go whole to one T4 each. The shards are merged on the Mac
-                                   (score_checkers.py --merge 4); every row is checked.
+                                   (score_checkers.py --merge auto); every row is checked.
+  "checkers:<plan>"                an explicit list of scoring jobs per T4, for reruns without a code change, e.g.
+                                   "checkers:techqa@0/8,expertqalong@1/8;techqa@4/8,expertqalong@5/8" (";" separates the
+                                   two T4s; dataset@shard/shards). MiniCheck redoes a case that runs out of GPU memory
+                                   with smaller batches of the same chunks (score_checkers.minicheck_probs).
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -195,7 +199,8 @@ elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-
     if base == "triviaplus":                   # E4 also runs the E1 long pass (L), next to B
         sh(f"python scripts/run_features.py {flag} --long --datasets {lds} "
            f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
-elif MODE in ("checkers-smoke", "checkers", "checkers-a", "checkers-b"):
+elif MODE in ("checkers-smoke", "checkers", "checkers-a", "checkers-b") or MODE.startswith("checkers:"):
+    import re
     import sys
     import torch
     import yaml
@@ -207,7 +212,10 @@ elif MODE in ("checkers-smoke", "checkers", "checkers-a", "checkers-b"):
             "checkers-a": [[("techqa", 0, 4), ("expertqalong", 0, 4), ("ragtruth", 0, 1)],
                            [("techqa", 1, 4), ("expertqalong", 1, 4), ("tofueval", 0, 1)]],
             "checkers-b": [[("techqa", 2, 4), ("expertqalong", 2, 4), ("triviapluslong", 0, 1)],
-                           [("techqa", 3, 4), ("expertqalong", 3, 4), ("ragbench", 0, 1)]]}[MODE]
+                           [("techqa", 3, 4), ("expertqalong", 3, 4), ("ragbench", 0, 1)]]}.get(MODE)
+    if MODE.startswith("checkers:"):   # an explicit plan, e.g. "checkers:techqa@0/8,expertqalong@1/8;techqa@4/8"
+        gpus = [[(d, int(i), int(n)) for d, i, n in (re.fullmatch(r"(\w+)@(\d+)/(\d+)", j.strip()).groups()
+                                                    for j in g.split(","))] for g in MODE.split(":", 1)[1].split(";")]
     need = list(dict.fromkeys(ds for jobs in gpus for ds, _, _ in jobs))
     roots = [r for r in sorted(set(glob.glob("/kaggle/input/**/canon_results", recursive=True))) if "_smoke" not in r]
     print("canon roots:", roots, flush=True)
@@ -270,7 +278,8 @@ elif MODE in ("checkers-smoke", "checkers", "checkers-a", "checkers-b"):
                         f"--out {out}/checks/checkers_check_{ds}.json && {step}")
             cmds.append(f"{{ {step}; }} || rc=1")      # a failing dataset does not stop the others on this T4
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu % max(torch.cuda.device_count(), 1)),
-                   PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false")
+                   PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false",
+                   PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")   # less fragmentation; results unchanged
         script = "rc=0; " + "; ".join(cmds) + "; exit $rc"
         print("$", script, f"(GPU {env['CUDA_VISIBLE_DEVICES']})", flush=True)
         procs.append(subprocess.Popen(script, shell=True, cwd=REPO_DIR, env=env, executable="/bin/bash"))
