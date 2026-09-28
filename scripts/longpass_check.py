@@ -1,7 +1,10 @@
 """Step E1 checks, written before the full run (CLAUDE.md, "E1 record"). Exit code 1 if any check fails.
 
-  (a) answer rows: with eager attention, the recomputed answer-row attention equals the model's own attention
-      weights in the same forward pass (max |diff| <= 1e-5)
+  (a) answer rows: with eager attention, the recomputed answer-row attention is at least as accurate as the model's
+      own attention weights in the same forward pass, both measured against a float64 reference of the answer rows
+      (max |rows - f64| <= 2 x max |eager - f64| + 1e-5; max |rows - eager| is reported too). E1 used max |rows - eager|
+      <= 1e-5, which assumed identical fp32 kernels; amended for E4 (CLAUDE.md, E4 record) after Qwen2.5's attention
+      logits (~2.3e4) put ~5e-4 of fp32 rounding in both paths on TRIVIA+.
   (b) window 1: Lookback features from the new path (SDPA, answer rows only, context cut at 1800 tokens) equal the
       frozen eager extractor's on the same cases (max |diff| <= 1e-3, mean <= 1e-4), with equal token counts and
       answer log-probs within 1e-3
@@ -107,13 +110,16 @@ def main():
     # (a) recomputed answer rows vs the eager weights of the same pass
     print("(a) answer rows vs eager weights", flush=True)
     la = LongPass(args.model, device=device, attn="eager")
-    worst = 0.0
+    worst, rows64, eager64 = 0.0, 0.0, 0.0
     for c in cases[: args.n_a]:
         _, info = la.extract(c, limit=1800, check=True)
         worst = max(worst, info.get("answer_rows_vs_eager_absdiff_max", 0.0))
+        rows64 = max(rows64, info.get("answer_rows_vs_f64_absdiff_max", 0.0))
+        eager64 = max(eager64, info.get("eager_vs_f64_absdiff_max", 0.0))
     la = None
     cleanup()
-    rep["a"] = dict(cases=min(args.n_a, len(cases)), answer_rows_absdiff_max=worst, **{"pass": bool(worst <= TOL_A)})
+    rep["a"] = dict(cases=min(args.n_a, len(cases)), answer_rows_absdiff_max=worst, rows_vs_f64_max=rows64,
+                    eager_vs_f64_max=eager64, **{"pass": bool(rows64 <= 2 * eager64 + TOL_A)})
 
     ok = rep["a"]["pass"] and rep["b"]["pass"] and rep.get("long_sample", {}).get("all_finite", True)
     rep["verdict"] = "PASS" if ok else "FAIL"

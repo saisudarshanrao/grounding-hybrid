@@ -51,11 +51,12 @@ TAP = _RopeTap()
 TAP.install()
 
 
-def answer_rows(module, q, k, P):
-    """softmax(q k^T / sqrt(d)) for the answer rows (causal, fp32): q 1 x H x A x d, k 1 x KV x T x d -> H x A x T."""
+def answer_rows(module, q, k, P, dtype=torch.float32):
+    """softmax(q k^T / sqrt(d)) for the answer rows (causal, fp32): q 1 x H x A x d, k 1 x KV x T x d -> H x A x T.
+    dtype=torch.float64 (on CPU) gives the reference used by check (a)."""
     k = _qwen2.repeat_kv(k, module.num_key_value_groups)
     A, T = q.shape[2], k.shape[2]
-    s = torch.matmul(q.float(), k.float().transpose(2, 3)) / math.sqrt(module.head_dim)
+    s = torch.matmul(q.to(dtype), k.to(dtype).transpose(2, 3)) / math.sqrt(module.head_dim)
     cols = torch.arange(T, device=s.device)
     rows = P + torch.arange(A, device=s.device)
     s.masked_fill_(cols[None, :] > rows[:, None], float("-inf"))
@@ -91,6 +92,7 @@ class LongPass:
         self.max_pos = self.model.config.max_position_embeddings
         self.max_ans, self.attn = max_ans_tokens, attn
         self._P, self._lb, self.check_diff = None, None, None
+        self.check_rows_f64, self.check_eager_f64 = None, None
         for i, layer in enumerate(layers):
             layer.self_attn.register_forward_hook(self._hook(i))
 
@@ -98,12 +100,17 @@ class LongPass:
         def hook(module, args, output):
             if self._P is None or TAP.q is None:
                 return
-            w = answer_rows(module, TAP.q, TAP.k, self._P)
+            q, k = TAP.q, TAP.k
+            w = answer_rows(module, q, k, self._P)
             TAP.q, TAP.k = None, None
             self._lb[layer_idx] = lookback_ratio(w, self._P)
             if self.check_diff is not None and output[1] is not None:   # check (a): eager weights of this pass
                 eager = output[1][0, :, self._P:, :].float()
                 self.check_diff = max(self.check_diff, float((w - eager).abs().max()))
+                # float64 reference (CPU): both fp32 paths are compared with it (E4 amendment to check (a))
+                ref = answer_rows(module, q.cpu(), k.cpu(), self._P, dtype=torch.float64)
+                self.check_rows_f64 = max(self.check_rows_f64, float((w.cpu().double() - ref).abs().max()))
+                self.check_eager_f64 = max(self.check_eager_f64, float((eager.cpu().double() - ref).abs().max()))
                 return (output[0], None) + tuple(output[2:])   # drop them: every layer's T x T map would not fit
         return hook
 
@@ -142,6 +149,7 @@ class LongPass:
         ids = torch.tensor([pid + aid], device=self.device)
         self._P, self._lb = P, [None] * self.n_layers
         self.check_diff = 0.0 if check else None
+        self.check_rows_f64 = self.check_eager_f64 = 0.0 if check else None
         TAP.P = P
         try:
             with _efficient_sdpa(self.device):
@@ -155,5 +163,7 @@ class LongPass:
         self._lb = None
         if check:
             info["answer_rows_vs_eager_absdiff_max"] = self.check_diff
+            info["answer_rows_vs_f64_absdiff_max"] = self.check_rows_f64
+            info["eager_vs_f64_absdiff_max"] = self.check_eager_f64
         return [dict(sent_idx=j, n_tok=len(tk), logprob_full=float(tlp[tk].mean()),
                      lookback=lb[:, :, tk].mean(-1)) for j, tk in sents], info
