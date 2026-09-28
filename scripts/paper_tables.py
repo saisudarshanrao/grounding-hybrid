@@ -8,6 +8,8 @@
       SmolLM2's cut rows, and L's cost (meta_long.json)
   A6  step E2, B vs its placebo on TechQA: dev (results/e2/e2_dev.json) next to test (e2_test_look_P5.json)
   A7  step E3, evidence displaced out of window 1: dev (results/e3/e3_dev.json) next to test (e3_test_look_P6.json)
+  A8  step E4, TRIVIA+-long (human labels): dev (results/e4/e4_dev.json) next to test (e4_test_look_P7.json)
+  A9  step E5, off-the-shelf checkers: dev (results/e5/e5_dev.json) next to test (e5_test_look_P8.json)
 
 Usage:
     python scripts/paper_tables.py        # -> results/paper_tables.md
@@ -238,10 +240,76 @@ def a7():
                   "B − window 1, displaced", "loss recovered"], runs))
 
 
+CI = lambda r: f"{r['mean']:+.3f} [{r['lo']:+.3f}, {r['hi']:+.3f}]" + ("*" if r["sig"] else "")  # noqa: E731
+A3F = lambda v: "–" if v is None or pd.isna(v) else f"{v:.3f}".replace("0.", ".", 1)  # noqa: E731
+
+
+def a8(res=None):
+    """Step E4: B vs Lookback on TRIVIA+-long, dev (out-of-fold) next to test (P7)."""
+    res = res or RES
+    f_dev, f_test = res / "e4" / "e4_dev.json", res / "test" / "e4_test_look_P7.json"
+    if not (f_dev.exists() and f_test.exists()):
+        return None
+    ev = {"dev": json.load(open(f_dev)), "test": json.load(open(f_test))}
+    pooled = [["B − Lookback (P7, the pre-written rule)"] + [CI(e["primary"]["D4"]) for e in ev.values()],
+              ["B − L (one long pass)"] + [CI(e["secondary"]["B - L (truncated rows), pooled"]) for e in ev.values()],
+              ["Lookback − GASP+base"] + [CI(e["secondary"]["Lookback - GASP+base (truncated rows), pooled"])
+                                         for e in ev.values()]]
+    dets = ["GASP+base", "Lookback [cv]", "L (one pass) [cv]", "B (ours) [cv]"]
+    runs = []
+    for m in ("Qwen2.5", "SmolLM2"):
+        for split, e in ev.items():
+            t = next(x for x in e["table"] if x["model"] == m)
+            full = next(k for k in e["power"] if k.startswith(m))
+            runs.append([m, split, f"{t['n']} / {e['power'][full]['sources']}",
+                         " / ".join(A3F(t[d]) for d in dets), CI(e["secondary"][f"{m} | B - Lookback"]),
+                         CI(e["secondary"][f"{m} | B - L"])])
+    by_task = []
+    for split, e in ev.items():
+        for k, r in e["secondary"].items():
+            parts = k.split(" | ")
+            if len(parts) == 3:
+                by_task.append([parts[0], parts[1], split, parts[2].split("(n=")[-1].rstrip(")"), CI(r)])
+    out = ("**A8. TRIVIA+-long (human sentence labels; articles >= 9,000 characters): B vs Lookback on sentences whose "
+           "context needs more than one window.** Dev: out-of-fold (the decision); test: fit on dev, scored once (P7). "
+           "* = 95% interval excludes 0.\n\n"
+           + md(["Pooled over the 2 scorers", "dev", "test"], pooled) + "\n\n"
+           + md(["Scorer", "split", "sentences / sources", "AUC GASP / Lookback / L / B", "B − Lookback", "B − L"], runs))
+    if by_task:
+        out += "\n\nB − Lookback by source benchmark (descriptive):\n\n" + md(
+            ["Scorer", "benchmark", "split", "sentences", "B − Lookback"], by_task)
+    return out
+
+
+def a9(res=None):
+    """Step E5: B vs MiniCheck and LettuceDetect, dev next to test (P8)."""
+    res = res or RES
+    f_dev, f_test = res / "e5" / "e5_dev.json", res / "test" / "e5_test_look_P8.json"
+    if not (f_dev.exists() and f_test.exists()):
+        return None
+    ev = {"dev": json.load(open(f_dev)), "test": json.load(open(f_test))}
+    pooled = [[f"B − {c} (P8, the pre-written rule)"] + [CI(e["primary"][c]["D"]) for e in ev.values()]
+              for c in ("MiniCheck", "LettuceDetect")]
+    names = {"ragtruth": "RAGTruth", "tofueval": "TofuEval", "ragbench": "RAGBench", "techqa": "TechQA",
+             "expertqalong": "ExpertQA-long", "triviapluslong": "TRIVIA+-long"}
+    runs = []
+    for split, e in ev.items():
+        for t in e["table"]:
+            runs.append([names.get(t["dataset"], t["dataset"]), t["model"], split, str(t["rows"]),
+                         " / ".join(A3F(t[d]) for d in ("Lookback", "B", "MiniCheck", "LettuceDetect"))
+                         + (" (LettuceDetect in-domain)" if t["dataset"] == "ragtruth" else "")])
+    return ("**A9. B vs trained, off-the-shelf checkers (MiniCheck-Flan-T5-Large, LettuceDetect-large; as released, no "
+            "fitting).** Primary: sentences needing more than one window of TechQA, ExpertQA-long and TRIVIA+-long, "
+            "pooled over sets x 2 scorers. Dev: B out-of-fold (the decision); test: B fit on dev, everything scored once "
+            "(P8). * = 95% interval excludes 0.\n\n"
+            + md(["Pooled (long sets x 2 scorers)", "dev", "test"], pooled) + "\n\n"
+            + md(["Dataset", "Scorer", "split", "sentences", "AUC Lookback / B / MiniCheck / LettuceDetect"], runs))
+
+
 def main():
     test = pd.read_csv(RES / "test" / "test_look.csv")
     text = "\n\n".join(["# Appendix tables (generated by scripts/paper_tables.py from saved results)",
-                        a1(test), a2(test), a3(), a4()] + [t for t in [a5(), a6(), a7()] if t]) + "\n"
+                        a1(test), a2(test), a3(), a4()] + [t for t in [a5(), a6(), a7(), a8(), a9()] if t]) + "\n"
     (RES / "paper_tables.md").write_text(text)
     print(text)
 

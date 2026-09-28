@@ -14,6 +14,8 @@ GASP's rows of those responses, in order) and reads distractor text in window 1 
 The long-pass file (features_long.npz, step E1) reads more context on purpose; its lb= is taken only on
 responses whose whole context fits GASP's 1800 tokens (the same text as window 1, read with a different
 attention kernel), where it must stay within the E1 check's 1e-3.
+The checker file (checkers.npz, step E5) holds MiniCheck and LettuceDetect scores (as released) for GASP's rows; it has
+no Lookback reading, so no lb=; align = no NaN score.
 
 Usage:
     python scripts/provenance.py        # -> results/PROVENANCE.md
@@ -44,14 +46,21 @@ VERSIONS = {
     11: ("352758371", "561950f", "one long pass (baseline L, step E1), long sets (MODE longpass)"),
     12: ("352812136", "c93d4e0", "placebo reading (step E2), TechQA (MODE placebo)"),
     13: ("352890215", "32c5c30", "evidence displacement (step E3), RAGTruth + RAGBench (MODE displace)"),
+    14: ("353556420", "a8a2c14", "TRIVIA+-long (step E4): GASP + windows + ReDeEP + one long pass (MODE triviaplus)"),
 }
-LONG = ("techqa", "expertqalong")
+LONG = ("techqa", "expertqalong", "triviapluslong")
 LONGPASS_VERSION = 11
 PLACEBO_VERSION = 12
 DISPLACE_VERSION = 13
+TRIVIAPLUS_VERSION = 14
+CHECKERS_VERSION = 15      # step E5 (MODE checkers); its VERSIONS entry is added when the run exists
 
 
 def version_of(ds, name):
+    if ds == "triviapluslong" and name != "checkers.npz":
+        return TRIVIAPLUS_VERSION
+    if name == "checkers.npz":
+        return CHECKERS_VERSION
     if name == "canon":
         return {"techqa": 6, "expertqalong": 7}.get(ds, 1)
     if name == "features_freq.npz":
@@ -80,6 +89,17 @@ def main():
         v = version_of(ds, "canon")
         rows.append({"run": run.name, "file": "canon_results/ (GASP scores)", "version": v,
                      "rows": f"{len(sent)} (reference)", "lb": "", "align": "", "sha": sha(CANON / run.name / "sentence.csv")})
+        if (run / "checkers.npz").exists():            # step E5: checker scores, aligned with GASP's rows
+            z = np.load(run / "checkers.npz")
+            meta = json.loads((run / "meta_checkers.json").read_text())
+            same = (len(z["case_id"]) == len(sent) and (z["case_id"] == sent["case_id"].values).all()
+                    and (z["sent_idx"] == sent["sent_idx"].values).all())
+            nan = int(np.isnan(z["minicheck"]).sum() + np.isnan(z["lettuce"]).sum())
+            rows.append({"run": run.name, "file": "checkers.npz", "version": CHECKERS_VERSION,
+                         "windows": f"MiniCheck + LettuceDetect as released ({meta.get('lettuce_multi_chunk_contexts')} "
+                                    f"multi-chunk contexts)",
+                         "rows": f"{len(z['case_id'])} {'same' if same else 'DIFFERENT'}", "lb": "",
+                         "align": f"{'ok' if nan == 0 else 'FAIL'}, {nan} NaN", "sha": sha(run / "checkers.npz")})
         for f in sorted(run.glob("features*.npz")):
             if f.name == "features_first5.npz":  # Mac check on 5 cases, not used in any result
                 continue
@@ -114,6 +134,8 @@ def main():
              "`https://www.kaggle.com/code/sudarshan1234/notebook83d38bc56a/log?scriptVersionId=<id>`.", "",
              "## Kaggle versions", "", "| Version | scriptVersionId | commit | what |", "|---|---|---|---|"]
     lines += [f"| {k} | {i} | {c} | {w} |" for k, (i, c, w) in VERSIONS.items()]
+    if any(r["file"] == "checkers.npz" for r in rows) and CHECKERS_VERSION not in VERSIONS:
+        lines += [f"| {CHECKERS_VERSION} | (add its scriptVersionId) | | checkers (step E5) |"]
     lines += ["", "Version 8 was an accidental save, cancelled; it produced nothing used here.",
               "Version 9's runtime patch only copies the answer part of the attention matrix instead of keeping a view",
               "(memory); it does not change any value. The same change was pushed as 88668d9.",

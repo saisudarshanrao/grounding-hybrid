@@ -479,6 +479,70 @@ def fig6_mechanism_test(tdir):
     save(fig, "fig6_mechanism_test")
 
 
+def _ci(d):
+    return f"{d['mean']:+.3f} [{d['lo']:+.3f}, {d['hi']:+.3f}]"
+
+
+def fig7_e4_test(tdir):
+    """Step E4 on test: TRIVIA+-long sentences needing more than one window, GASP / Lookback (window 1) / one long
+    pass L / B per scorer; B - Lookback above each group (starred where its 95% interval excludes 0)."""
+    f = tdir / "e4_test_look_P7.json"
+    if not f.exists():
+        return
+    e = json.load(open(f))
+    rows = e["table"]
+    bars = [("GASP+base", "GASP", "#e69f00", dict(edgecolor="k", lw=0.3)),
+            ("Lookback [cv]", "Lookback (window 1)", "#0072b2", dict(edgecolor="k", lw=0.3)),
+            ("L (one pass) [cv]", "one long pass (L)", COL_L, dict(edgecolor="k", lw=0.3)),
+            ("B (ours) [cv]", "B (ours, new)", "#009e73", OURS)]
+    fig, a = plt.subplots(figsize=(3.6, 2.5))
+    x, w = np.arange(len(rows)), 0.2
+    for i, (k, lab, color, style) in enumerate(bars):
+        a.bar(x + (i - 1.5) * w, [r[k] for r in rows], w, color=color, label=lab, **style)
+    top = max(r[k] for r in rows for k, *_ in bars)
+    low = min(r[k] for r in rows for k, *_ in bars)
+    for xi, r in zip(x, rows):
+        d = e["secondary"][f"{r['model']} | B - Lookback"]
+        a.text(xi, max(r[k] for k, *_ in bars) + 0.012, f"{d['mean']:+.3f}{'*' if d['sig'] else ''}", ha="center",
+               fontsize=6.5, color="#006b4f", fontweight="bold" if d["sig"] else "normal")
+    a.set_xticks(x, [r["model"].replace("2.5", "") for r in rows])
+    a.set_ylim(max(0.3, low - 0.06), min(1.0, top + 0.07))
+    a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
+    a.set_title(f"TRIVIA+-long: B − Lookback pooled {_ci(e['primary']['D4'])}", fontsize=7)
+    a.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.1), ncol=2, fontsize=6)
+    save(fig, "fig7_e4_triviaplus_test")
+
+
+def fig8_e5_test(tdir):
+    """Step E5 on test: AUC of Lookback (window 1), B and the two off-the-shelf checkers on the long sets' sentences
+    needing more than one window, per dataset and scorer; the pooled P8 differences in the title."""
+    f = tdir / "e5_test_look_P8.json"
+    if not f.exists():
+        return
+    e = json.load(open(f))
+    names = dict(DS_NAME, triviapluslong="TRIVIA+-long")
+    rows = [r for r in e["table"] if r["dataset"] in ("techqa", "expertqalong", "triviapluslong")]
+    bars = [("Lookback", "Lookback (window 1)", "#0072b2", dict(edgecolor="k", lw=0.3)),
+            ("B", "B (ours, new)", "#009e73", OURS),
+            ("MiniCheck", "MiniCheck-FT5 (0.8B)", "#cc79a7", dict(edgecolor="k", lw=0.3)),
+            ("LettuceDetect", "LettuceDetect-large (0.4B)", "#999999", dict(edgecolor="k", lw=0.3))]
+    fig, a = plt.subplots(figsize=(6.4, 2.5))
+    x, w = np.arange(len(rows)), 0.2
+    for i, (k, lab, color, style) in enumerate(bars):
+        a.bar(x + (i - 1.5) * w, [r[k] for r in rows], w, color=color, label=lab, **style)
+    low = min(r[k] for r in rows for k, *_ in bars)
+    top = max(r[k] for r in rows for k, *_ in bars)
+    a.axhline(0.5, color="k", lw=0.5, ls=":")
+    a.set_xticks(x, [f"{names[r['dataset']]}\n{r['model'].replace('2.5', '')}" for r in rows], fontsize=6.3)
+    a.set_ylim(max(0.2, min(0.45, low - 0.05)), min(1.0, top + 0.06))
+    a.set_ylabel(f"{SPLIT} AUC, truncated sentences")
+    p = e["primary"]
+    a.set_title(f"pooled: B − MiniCheck {_ci(p['MiniCheck']['D'])};  B − LettuceDetect {_ci(p['LettuceDetect']['D'])}",
+                fontsize=7)
+    a.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=4, fontsize=6)
+    save(fig, "fig8_e5_checkers_test")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--test", nargs="?", const=str(ROOT / "results" / "test"), default=None,
@@ -493,6 +557,8 @@ if __name__ == "__main__":
         fig1_test(tdir)
         fig5_e1_test(tdir)
         fig6_mechanism_test(tdir)
+        fig7_e4_test(tdir)
+        fig8_e5_test(tdir)
     else:
         fig2()
         fig3()

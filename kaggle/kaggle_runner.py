@@ -47,8 +47,8 @@ MODE (set below):
   "checkers-smoke" / "checkers"    step E5: MiniCheck-Flan-T5-Large and LettuceDetect-large, as released, score every GASP
                                    sentence of the 6 datasets x 2 scorer runs found in the attached inputs (canon_results
                                    of the week-1 dataset and of the notebook versions with the long sets). Installs the
-                                   checkers' own packages (transformers >= 4.48; nothing of the frozen pipeline runs in
-                                   this mode); one T4 per half of the datasets. The smoke runs the E5 checks (a)-(d) and
+                                   checkers' own packages (transformers >= 4.48) after rebuilding any missing long set's
+                                   GASP run (deterministic reruns, before the upgrade); one T4 per half of the datasets. The smoke runs the E5 checks (a)-(d) and
                                    scores 20 cases per dataset.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
@@ -211,6 +211,28 @@ elif MODE in ("checkers-smoke", "checkers"):
         else:
             print(f"[missing] {ds}: {dirs}", flush=True)
     print("datasets found:", {d: v for d, v in plan.items()}, flush=True)
+    # long sets not among the inputs: rebuild their GASP runs here, BEFORE the package upgrade below (GASP needs the
+    # pinned transformers). GASP is deterministic: reruns were byte-identical to the saved runs (Versions 10-12).
+    rerun = [ds for ds in ("techqa", "expertqalong", "triviapluslong") if ds not in plan]
+    if rerun:
+        if "triviapluslong" in rerun:
+            fetch_triviaplus()
+        cap = "--max_cases 20" if flag else ""
+        gprocs = []
+        for i, m in enumerate(models):
+            env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % max(torch.cuda.device_count(), 1)), PYTHONUNBUFFERED="1")
+            cmd = (f"python scripts/reproduce_gasp.py --models {m} --datasets {' '.join(rerun)} {cap} "
+                   f"--outroot {OUTROOT}/gasp_repro --no_analysis")
+            print("$", cmd, f"(GPU {env['CUDA_VISIBLE_DEVICES']})", flush=True)
+            gprocs.append(subprocess.Popen(cmd, shell=True, cwd=REPO_DIR, env=env))
+        if any(p.wait() for p in gprocs):
+            raise RuntimeError("a GASP rerun failed; see the log above")
+        roots.append(f"{OUTROOT}/gasp_repro/canon_results")
+        for ds in rerun:
+            dirs = [canon_dir(f"{m.split('/')[-1]}_{ds}_K5") for m in models]
+            if all(dirs):
+                plan[ds] = dirs
+        print("datasets after the GASP reruns:", list(plan), flush=True)
     # E5's own environment: ModernBERT needs transformers >= 4.48 (the frozen pipeline is pinned at 4.44.2 and is not
     # used in this mode); MiniCheck pinned to the commit the E5 code was written against
     sh('pip install -q "transformers>=4.48.3,<5" "lettucedetect==0.2.3" accelerate sentencepiece '
