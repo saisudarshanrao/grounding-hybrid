@@ -7,6 +7,9 @@
   (c) every LettuceDetect answer token maps to exactly one GASP sentence (its start offset lies inside one span, GASP's
       token-to-sentence rule; spans are disjoint) and every GASP sentence gets >= 1 token
   (d) logged: contexts that needed more than one LettuceDetect chunk and contexts whose prompt was truncated
+"GASP sentence" is a sentence GASP scores, i.e. a row of a run's sentence.csv (CLARIFICATION 28 Sep ~17:25 IST, before
+any E5 result: cases.jsonl also lists spans GASP skips, e.g. a lone "-" of fewer than 3 scorer tokens; such spans can
+hold no answer token and were wrongly counted in smoke #2). They are reported, not failed.
 
     python scripts/checkers_check.py --canon_dirs <Qwen TAG dir> <SmolLM2 TAG dir> --n 20 --out <json>
 """
@@ -16,6 +19,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -53,12 +57,14 @@ def main():
     if not rep["a"]["pass"]:
         fails.append("(a) README examples not reproduced")
 
-    cases = {}
+    cases, scored = {}, set()
     for cd in args.canon_dirs:
         for c in load_cases(cd):
             cases.setdefault(c["case_id"], c)
+        s = pd.read_csv(Path(cd) / "sentence.csv", usecols=["case_id", "sent_idx"])
+        scored |= set(zip(s["case_id"], s["sent_idx"].astype(int)))
     ids = sorted(cases)[: args.n]
-    nan_mc = nan_l = cross = empty = multi = trunc = n_sent = 0
+    nan_mc = nan_l = cross = empty = multi = trunc = n_sent = n_spans = skipped_empty = 0
     for cid in ids:
         c = cases[cid]
         sp = [tuple(x) for x in c["sent_spans"]]
@@ -66,19 +72,23 @@ def main():
         _, sup, _, _ = mc.score(docs=[c["context"]] * len(texts), claims=texts)
         toks, n_chunks, tr = lt.token_probs(c["context"], c["query"], c["answer"])
         lett = sentence_max(toks, sp)
-        n_sent += len(sp)
-        nan_mc += int(np.sum(~np.isfinite(np.asarray(sup, float))))
-        nan_l += int(np.sum(~np.isfinite(np.asarray(lett, float))))
+        keep = [(cid, j) in scored for j in range(len(sp))]          # the GASP sentences (sentence.csv rows)
+        n_spans += len(sp)
+        n_sent += sum(keep)
+        nan_mc += int(np.sum(~np.isfinite(np.asarray(sup, float)[keep])))
+        nan_l += int(np.sum(~np.isfinite(np.asarray(lett, float)[keep])))
         for ts, te, _ in toks:
             if sum(1 for s, e in sp if s <= ts < e) != 1:        # start in no span (or, impossibly, in two)
                 cross += 1
-        empty += sum(1 for s, e in sp if not any(s <= ts < e for ts, _, _ in toks))
+        no_tok = [not any(s <= ts < e for ts, _, _ in toks) for s, e in sp]
+        empty += sum(k and t for k, t in zip(keep, no_tok))
+        skipped_empty += sum((not k) and t for k, t in zip(keep, no_tok))
         multi += int(n_chunks > 1)
         trunc += int(tr)
-    rep["b"] = dict(cases=len(ids), sentences=n_sent, nan_minicheck=nan_mc, nan_lettuce=nan_l,
+    rep["b"] = dict(cases=len(ids), sentences=n_sent, spans_listed=n_spans, nan_minicheck=nan_mc, nan_lettuce=nan_l,
                     **{"pass": nan_mc == 0 and nan_l == 0})
     rep["c"] = dict(tokens_not_in_one_sentence=cross, sentences_without_tokens=empty,
-                    **{"pass": cross == 0 and empty == 0})
+                    skipped_spans_without_tokens=skipped_empty, **{"pass": cross == 0 and empty == 0})
     rep["d"] = dict(multi_chunk_contexts=multi, truncated_contexts=trunc)
     for k in ("b", "c"):
         if not rep[k]["pass"]:

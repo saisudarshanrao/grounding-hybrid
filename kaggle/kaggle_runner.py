@@ -50,6 +50,11 @@ MODE (set below):
                                    checkers' own packages (transformers >= 4.48) after rebuilding any missing long set's
                                    GASP run (deterministic reruns, before the upgrade); one T4 per half of the datasets. The smoke runs the E5 checks (a)-(d) and
                                    scores 20 cases per dataset.
+  "checkers-a" / "checkers-b"      the full E5 scoring split over two notebook versions that run at the same time (MiniCheck
+                                   re-reads every 500-word chunk per sentence: ~11 T4-hours in all). TechQA and
+                                   ExpertQA-long are cut into 4 shards of cases, one per T4 of the two versions; the short
+                                   sets and TRIVIA+-long go whole to one T4 each. The shards are merged on the Mac
+                                   (score_checkers.py --merge 4); every row is checked.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -61,7 +66,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo, displace, triviaplus, checkers (+ -smoke)
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo, displace, triviaplus, checkers (+ -smoke), checkers-a, checkers-b
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -190,12 +195,20 @@ elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-
     if base == "triviaplus":                   # E4 also runs the E1 long pass (L), next to B
         sh(f"python scripts/run_features.py {flag} --long --datasets {lds} "
            f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
-elif MODE in ("checkers-smoke", "checkers"):
+elif MODE in ("checkers-smoke", "checkers", "checkers-a", "checkers-b"):
     import sys
     import torch
     import yaml
     models = yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]
-    halves = [["techqa", "ragtruth", "tofueval"], ["expertqalong", "triviapluslong", "ragbench"]]   # one T4 each
+    # per T4: [(dataset, shard i, shards n)]; a dataset split over shards is merged into checkers.npz at the end
+    whole = [[("techqa", 0, 1), ("ragtruth", 0, 1), ("tofueval", 0, 1)],
+             [("expertqalong", 0, 1), ("triviapluslong", 0, 1), ("ragbench", 0, 1)]]
+    gpus = {"checkers-smoke": whole, "checkers": whole,
+            "checkers-a": [[("techqa", 0, 4), ("expertqalong", 0, 4), ("ragtruth", 0, 1)],
+                           [("techqa", 1, 4), ("expertqalong", 1, 4), ("tofueval", 0, 1)]],
+            "checkers-b": [[("techqa", 2, 4), ("expertqalong", 2, 4), ("triviapluslong", 0, 1)],
+                           [("techqa", 3, 4), ("expertqalong", 3, 4), ("ragbench", 0, 1)]]}[MODE]
+    need = list(dict.fromkeys(ds for jobs in gpus for ds, _, _ in jobs))
     roots = [r for r in sorted(set(glob.glob("/kaggle/input/**/canon_results", recursive=True))) if "_smoke" not in r]
     print("canon roots:", roots, flush=True)
 
@@ -204,7 +217,7 @@ elif MODE in ("checkers-smoke", "checkers"):
         return hits[0] if hits else None
 
     plan = {}
-    for ds in sum(halves, []):
+    for ds in need:
         dirs = [canon_dir(f"{m.split('/')[-1]}_{ds}_K5") for m in models]
         if all(dirs):
             plan[ds] = dirs
@@ -213,7 +226,7 @@ elif MODE in ("checkers-smoke", "checkers"):
     print("datasets found:", {d: v for d, v in plan.items()}, flush=True)
     # long sets not among the inputs: rebuild their GASP runs here, BEFORE the package upgrade below (GASP needs the
     # pinned transformers). GASP is deterministic: reruns were byte-identical to the saved runs (Versions 10-12).
-    rerun = [ds for ds in ("techqa", "expertqalong", "triviapluslong") if ds not in plan]
+    rerun = [ds for ds in ("techqa", "expertqalong", "triviapluslong") if ds in need and ds not in plan]
     if rerun:
         if "triviapluslong" in rerun:
             fetch_triviaplus()
@@ -233,6 +246,9 @@ elif MODE in ("checkers-smoke", "checkers"):
             if all(dirs):
                 plan[ds] = dirs
         print("datasets after the GASP reruns:", list(plan), flush=True)
+    missing = [ds for ds in need if ds not in plan]
+    if missing:
+        raise RuntimeError(f"no GASP run for {missing}")
     # E5's own environment: ModernBERT needs transformers >= 4.48 (the frozen pipeline is pinned at 4.44.2 and is not
     # used in this mode); MiniCheck pinned to the commit the E5 code was written against
     sh('pip install -q "transformers>=4.48.3,<5" "lettucedetect==0.2.3" accelerate sentencepiece '
@@ -241,25 +257,32 @@ elif MODE in ("checkers-smoke", "checkers"):
     sh(f"{sys.executable} -c \"import nltk; [nltk.download(p, download_dir='/tmp/nltk_data', quiet=True) "
        f"for p in ('punkt', 'punkt_tab')]\"")
     out = f"{OUTROOT}/features"
+    cap = " --max_cases 20" if flag else ""
     procs = []
-    for gpu, dss in enumerate(halves):
+    for gpu, jobs in enumerate(gpus):
         cmds = []
-        for ds in [d for d in dss if d in plan]:
+        for ds, i, n in jobs:
             dirs = " ".join(plan[ds])
-            if flag:
-                cmds.append(f"python -W ignore scripts/checkers_check.py --canon_dirs {dirs} --n 20 "
-                            f"--out {out}/checks/checkers_check_{ds}.json")
-            cmds.append(f"python -W ignore scripts/score_checkers.py --canon_dirs {dirs} --outroot {out}"
-                        + (" --max_cases 20" if flag else ""))
-        if not cmds:
-            continue
+            step = (f"python -W ignore scripts/score_checkers.py --canon_dirs {dirs} --outroot {out}{cap}"
+                    + (f" --shard {i}/{n}" if n > 1 else ""))
+            if flag:              # smoke: the E5 checks (a)-(d) on 20 cases first
+                step = (f"python -W ignore scripts/checkers_check.py --canon_dirs {dirs} --n 20 "
+                        f"--out {out}/checks/checkers_check_{ds}.json && {step}")
+            cmds.append(f"{{ {step}; }} || rc=1")      # a failing dataset does not stop the others on this T4
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(gpu % max(torch.cuda.device_count(), 1)),
                    PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false")
-        script = " && ".join(cmds)
+        script = "rc=0; " + "; ".join(cmds) + "; exit $rc"
         print("$", script, f"(GPU {env['CUDA_VISIBLE_DEVICES']})", flush=True)
-        procs.append(subprocess.Popen(script, shell=True, cwd=REPO_DIR, env=env))
-    if any(p.wait() for p in procs):
-        raise RuntimeError("a checkers worker failed; see the log above")
+        procs.append(subprocess.Popen(script, shell=True, cwd=REPO_DIR, env=env, executable="/bin/bash"))
+    failed = [p.wait() for p in procs]
+    for ds in need:                 # join a split dataset here when all its shards ran here (else on the Mac)
+        n = max(n for jobs in gpus for d, _, n in jobs if d == ds)
+        if n > 1 and len({i for jobs in gpus for d, i, _ in jobs if d == ds}) == n:
+            r = subprocess.run(f"python -W ignore scripts/score_checkers.py --canon_dirs {' '.join(plan[ds])} "
+                               f"--outroot {out}{cap} --merge {n}", shell=True, cwd=REPO_DIR)
+            failed.append(r.returncode)
+    if any(failed):
+        raise RuntimeError("an E5 scoring job or row check failed; see the log above (finished files are kept)")
 else:
     raise ValueError(f"unknown MODE {MODE!r}")
 
