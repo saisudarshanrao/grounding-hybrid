@@ -22,6 +22,7 @@ Usage:
     python -W ignore scripts/make_figures.py --test results/test_dryrun   # same code on the dev-half dry run
 """
 import argparse
+import functools
 import json
 import sys
 from pathlib import Path
@@ -297,11 +298,18 @@ def fig0_test(tdir):
     if e1:          # P4 (step E1, after the freeze): a tie reads "matches"
         checks.append(("P4  B \u2212 one long pass\nlong contexts, truncated", e1["primary"]["D"], e1_dev["primary"]["D"]))
     for tag, f_test, f_dev, key, label in (
-            ("P5", "e2_test_look_P5.json", "e2/e2_dev.json", "D2", "B \u2212 placebo\nTechQA, truncated"),
-            ("P6", "e3_test_look_P6.json", "e3/e3_dev.json", "D3", "B \u2212 window 1\nevidence displaced")):
-        if (tdir / f_test).exists() and (ROOT / "results" / f_dev).exists():     # steps E2, E3 (after the freeze)
-            checks.append((f"{tag}  {label}", json.load(open(tdir / f_test))["primary"][key],
-                           json.load(open(ROOT / "results" / f_dev))["primary"][key]))
+            ("P5", "e2_test_look_P5.json", "e2/e2_dev.json", ("D2",), "B \u2212 placebo\nTechQA, truncated"),
+            ("P6", "e3_test_look_P6.json", "e3/e3_dev.json", ("D3",), "B \u2212 window 1\nevidence displaced"),
+            ("P7", "e4_test_look_P7.json", "e4/e4_dev.json", ("D4",), "B \u2212 Lookback\nTRIVIA+-long, human labels"),
+            ("P8", "e5_test_look_P8.json", "e5/e5_dev.json", ("MiniCheck", "D"), "B \u2212 MiniCheck\nlong sets, truncated"),
+            ("P8", "e5_test_look_P8.json", "e5/e5_dev.json", ("LettuceDetect", "D"),
+             "B \u2212 LettuceDetect\nlong sets, truncated")):
+        if (tdir / f_test).exists() and (ROOT / "results" / f_dev).exists():     # steps E2-E5 (after the freeze)
+            get = lambda f: functools.reduce(lambda d, k: d[k], key, json.load(open(f))["primary"])  # noqa: E731
+            checks.append((f"{tag}  {label}", get(tdir / f_test), get(ROOT / "results" / f_dev)))
+    lo = min(min(t["lo"], dv["lo"] if dv else 0) for _, t, dv in checks)
+    hi = max(max(t["hi"], dv["hi"] if dv else 0) for _, t, dv in checks)
+    xmax = max(0.16, hi + 0.08)
     for yi, (lab, t, dv) in enumerate(checks):
         y = len(checks) - 1 - yi
         color = "#009e73" if "B" in lab.split("\n")[0] else COL["Lookback (S3)"]
@@ -310,13 +318,20 @@ def fig0_test(tdir):
         if dv is not None:
             b.errorbar(dv["mean"], y - 0.28, xerr=[[dv["mean"] - dv["lo"]], [dv["hi"] - dv["mean"]]], fmt="o",
                        mfc="white", color=color, ms=4, capsize=2, lw=0.8)
-        verdict = ("matches (tie)" if lab.startswith("P4") and not t["sig"] else
-                   "holds" if t["sig"] and t["mean"] > 0 else "does not hold")
-        b.text(0.125, y, verdict, va="center", fontsize=6.5,
-               color="#006b4f" if t["sig"] or verdict.startswith("matches") else "#a33")
+        other = lab.split("\u2212 ")[1].split("\n")[0]
+        if lab.startswith("P4"):
+            verdict = "matches (tie)" if not t["sig"] else "holds" if t["mean"] > 0 else "does not hold"
+        elif lab.startswith("P7"):
+            verdict = "not shown" if not t["sig"] else "replicates" if t["mean"] > 0 else "B loses"
+        elif lab.startswith("P8"):
+            verdict = "tie" if not t["sig"] else "B ahead" if t["mean"] > 0 else f"{other} ahead"
+        else:
+            verdict = "holds" if t["sig"] and t["mean"] > 0 else "does not hold"
+        good = (t["sig"] and t["mean"] > 0) or verdict in ("matches (tie)", "tie")
+        b.text(xmax - 0.004, y, verdict, va="center", ha="right", fontsize=6.5, color="#006b4f" if good else "#a33")
     b.axvline(0, color="k", lw=0.6, ls=":")
     b.set_yticks(range(len(checks)), [c[0] for c in reversed(checks)], fontsize=6.5)
-    b.set_xlim(-0.03, 0.16)
+    b.set_xlim(min(-0.03, lo - 0.01), xmax)
     b.set_ylim(-0.6, len(checks) - 0.5)
     b.set_xlabel("AUC difference, 95% interval (filled: test, open: dev)")
     b.set_title("(b) Checks written before each test look")

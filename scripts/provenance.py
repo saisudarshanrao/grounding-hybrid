@@ -47,20 +47,28 @@ VERSIONS = {
     12: ("352812136", "c93d4e0", "placebo reading (step E2), TechQA (MODE placebo)"),
     13: ("352890215", "32c5c30", "evidence displacement (step E3), RAGTruth + RAGBench (MODE displace)"),
     14: ("353556420", "a8a2c14", "TRIVIA+-long (step E4): GASP + windows + ReDeEP + one long pass (MODE triviaplus)"),
+    15: ("353596833", "2b7e1d1", "checkers part a (step E5; MODE checkers-a): saved TechQA 1/4, ExpertQA-long 0/4, RAGTruth, "
+                                 "TofuEval; 2 shards out of GPU memory, so the version ends 'failed'"),
+    16: ("353598265", "2b7e1d1", "checkers part b (step E5; MODE checkers-b): saved TechQA 2/4, ExpertQA-long 2/4, TRIVIA+-long; "
+                                 "3 jobs out of GPU memory, so the version ends 'failed'"),
+    17: ("353651141", "0bb8455", "checkers rerun C (step E5, out-of-memory fallback): TechQA 0/8 + 4/8, ExpertQA-long 1/8 + 5/8"),
+    18: ("353653036", "0bb8455", "checkers rerun D (step E5, out-of-memory fallback): TechQA 3/8 + 7/8, ExpertQA-long 3/8 + "
+                                 "7/8, RAGBench 0/2 + 1/2"),
 }
 LONG = ("techqa", "expertqalong", "triviapluslong")
 LONGPASS_VERSION = 11
 PLACEBO_VERSION = 12
 DISPLACE_VERSION = 13
 TRIVIAPLUS_VERSION = 14
-CHECKERS_VERSION = 15      # step E5 (MODE checkers); its VERSIONS entry is added when the run exists
+CHECKERS_VERSION = {"ragtruth": "15", "tofueval": "15", "triviapluslong": "16", "ragbench": "18",   # step E5: parts
+                    "techqa": "15+16+17+18", "expertqalong": "15+16+17+18"}                     # merged on the Mac
 
 
 def version_of(ds, name):
     if ds == "triviapluslong" and name != "checkers.npz":
         return TRIVIAPLUS_VERSION
     if name == "checkers.npz":
-        return CHECKERS_VERSION
+        return CHECKERS_VERSION[ds]
     if name == "canon":
         return {"techqa": 6, "expertqalong": 7}.get(ds, 1)
     if name == "features_freq.npz":
@@ -95,7 +103,7 @@ def main():
             same = (len(z["case_id"]) == len(sent) and (z["case_id"] == sent["case_id"].values).all()
                     and (z["sent_idx"] == sent["sent_idx"].values).all())
             nan = int(np.isnan(z["minicheck"]).sum() + np.isnan(z["lettuce"]).sum())
-            rows.append({"run": run.name, "file": "checkers.npz", "version": CHECKERS_VERSION,
+            rows.append({"run": run.name, "file": "checkers.npz", "version": CHECKERS_VERSION[ds],
                          "windows": f"MiniCheck + LettuceDetect as released ({meta.get('lettuce_multi_chunk_contexts')} "
                                     f"multi-chunk contexts)",
                          "rows": f"{len(z['case_id'])} {'same' if same else 'DIFFERENT'}", "lb": "",
@@ -134,13 +142,15 @@ def main():
              "`https://www.kaggle.com/code/sudarshan1234/notebook83d38bc56a/log?scriptVersionId=<id>`.", "",
              "## Kaggle versions", "", "| Version | scriptVersionId | commit | what |", "|---|---|---|---|"]
     lines += [f"| {k} | {i} | {c} | {w} |" for k, (i, c, w) in VERSIONS.items()]
-    if any(r["file"] == "checkers.npz" for r in rows) and CHECKERS_VERSION not in VERSIONS:
-        lines += [f"| {CHECKERS_VERSION} | (add its scriptVersionId) | | checkers (step E5) |"]
     lines += ["", "Version 8 was an accidental save, cancelled; it produced nothing used here.",
               "Version 9's runtime patch only copies the answer part of the attention matrix instead of keeping a view",
               "(memory); it does not change any value. The same change was pushed as 88668d9.",
               "Version 10 reran GASP on TechQA and ExpertQA-long: sentence.csv, response.csv and cases.jsonl are",
-              "byte-identical to Versions 6 and 7 (GASP scoring is deterministic).", "",
+              "byte-identical to Versions 6 and 7 (GASP scoring is deterministic).",
+              "Step E5's checker scores come in parts (shards of cases) from Versions 15-18, joined on the Mac by",
+              "score_checkers.py --merge auto, which requires every case and every sentence.csv row exactly once and that",
+              "every part was aligned to a sentence.csv with the local file's sha256; Versions 15 and 16 end 'failed' only",
+              "because some of their jobs ran out of GPU memory (rerun in 17 and 18); their saved parts are complete.", "",
               "## Files", "",
               "rows = same (case_id, sent_idx) rows in the same order as GASP's sentence.csv; "
               "lb = max |lookback - base lookback| (0 = window 1 reads exactly what the base file read; "
