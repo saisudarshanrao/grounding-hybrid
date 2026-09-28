@@ -61,6 +61,13 @@ def main():
             continue
         parts = sorted({p.name for t in tags for p in (out / t).glob("checkers.part*of*.npz")})
         if parts:
+            metas = [json.load(open(p)) for p in (out / tags[0]).glob("meta_checkers.part*of*.json")]
+            have = {c for m in metas for c in m["per_case"]["case_id"]}
+            need = metas[0]["cases_all_shards"]
+            if len(have) < need:
+                print(f"\n{ds}: parts {parts} cover {len(have)} of {need} cases; waiting for the other parts")
+                ok = False
+                continue
             print(f"\n{ds}: joining {parts}")
             ok &= score_checkers.merge(SimpleNamespace(canon_dirs=[str(canon / t) for t in tags], outroot=str(out),
                                                        max_cases=0, merge="auto"))
