@@ -7,6 +7,8 @@ Usage:
     python scripts/reproduce_gasp.py --dry-run        # print the commands without running them
     python scripts/reproduce_gasp.py --datasets techqa   # long-context RAGBench domain (gasp_longctx.py)
     python scripts/reproduce_gasp.py --datasets expertqalong   # ExpertQA, contexts >= 9000 chars
+    python scripts/reproduce_gasp.py --datasets triviapluslong   # E4: TRIVIA+, articles >= 9000 chars
+                                      # (gasp_triviaplus.py; parquet from $TRIVIAPLUS_PARQUET or results/data/)
 
 The run is resumable: a (model, dataset) pair whose sentence.csv already exists is skipped,
 so if a Kaggle session times out, just run the same command again.
@@ -31,6 +33,8 @@ GASP_PIPE = ROOT / "third_party" / "GASP" / "pipeline"
 # long-context sets: one RAGBench domain, all splits, via scripts/gasp_longctx.py (name: its extra args)
 LONGCTX_DOMAINS = {"techqa": ["--domain", "techqa"],
                    "expertqalong": ["--domain", "expertqa", "--min_ctx_chars", "9000"]}
+# other loaders patched into GASP's pipeline (name: script and its extra args); E4 cutoff fixed 28 Sep 2026
+OTHER_LOADERS = {"triviapluslong": [str(ROOT / "scripts" / "gasp_triviaplus.py"), "--min_ctx_chars", "9000"]}
 
 
 def tag_for(model, dataset, k):
@@ -77,6 +81,8 @@ def main():
     ap.add_argument("--smoke", action="store_true", help="tiny run to test the pipeline")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max_cases", type=int, default=0, help="cap cases per run (quick tests)")
+    ap.add_argument("--no_analysis", action="store_true",
+                    help="skip GASP's analysis (it prints test-split AUCs; E4 keeps new test data unseen)")
     args = ap.parse_args()
 
     if not GASP_PIPE.exists():
@@ -109,8 +115,12 @@ def main():
 
             print(f"\n=== {tag} ===", flush=True)
             t0 = time.time()
-            entry = ([str(ROOT / "scripts" / "gasp_longctx.py")] + LONGCTX_DOMAINS[ds] + ["--dataset", "ragbench"]
-                     if ds in LONGCTX_DOMAINS else [str(GASP_PIPE / "run_gasp.py"), "--dataset", ds])
+            if ds in LONGCTX_DOMAINS:
+                entry = [str(ROOT / "scripts" / "gasp_longctx.py")] + LONGCTX_DOMAINS[ds] + ["--dataset", "ragbench"]
+            elif ds in OTHER_LOADERS:
+                entry = OTHER_LOADERS[ds] + ["--dataset", "ragbench"]
+            else:
+                entry = [str(GASP_PIPE / "run_gasp.py"), "--dataset", ds]
             cmd = [sys.executable] + entry + ["--model", model,
                    "--k_chunks", str(p["k_chunks"]),
                    "--max_ctx_tokens", str(p["max_ctx_tokens"]),
@@ -127,7 +137,7 @@ def main():
                 continue
 
             # GASP's own analysis: raw-feature AUCs, trained classifiers, bootstrap CIs
-            for level in ("span", "response"):
+            for level in (() if args.no_analysis else ("span", "response")):
                 run([sys.executable, str(GASP_PIPE / "analyze_gasp.py"),
                      str(out_dir / "sentence.csv"), "--level", level],
                     log_path=None if args.dry_run else out_dir / f"analysis_{level}.txt",

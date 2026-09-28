@@ -39,6 +39,11 @@ MODE (set below):
                                    fits one window, moved behind 1808 tokens of other cases' contexts), read with
                                    the frozen windowed extractor; uses the attached GASP runs (no rerun). The smoke
                                    runs the E3 checks (a), (b) and (d) first.
+  "triviaplus-smoke" / "triviaplus" step E4: TRIVIA+-long (human sentence labels; articles >= 9000 characters): the
+                                   parquet is fetched into /tmp (licence CC BY-NC-ND 4.0: never saved as output),
+                                   GASP's pipeline without its analysis (keeps test numbers unseen), then the frozen
+                                   windowed features (+ ReDeEP) and the E1 long pass. The smoke runs the E4 checks
+                                   (a), (b) and (d) on the 20-case GASP runs first.
 Run the smoke variant first. If the cell stops midway, run it again in the same session:
 finished parts are skipped. Long runs: Save Version > Save & Run All, so a closed browser
 does not stop them. Results go to /kaggle/working/results, kept as the notebook output.
@@ -50,7 +55,7 @@ import subprocess
 
 GITHUB_USER = "saisudarshanrao"
 REPO_NAME = "grounding-hybrid"
-MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo, displace (+ -smoke)
+MODE = "smoke"   # smoke, full, features, chunked, trunc, redeep, techqa, expertqa, freq, longfreq, longpass, placebo, displace, triviaplus (+ -smoke)
 
 REPO_DIR = "/tmp/" + REPO_NAME                 # code lives in /tmp, which is NOT saved as output
 OUTROOT = "/kaggle/working/results"            # results ARE saved as output
@@ -113,6 +118,25 @@ def prefetch_models(attempts=4, timeout=600):
 
 prefetch_models()
 
+TRIVIAPLUS_URL = ("https://raw.githubusercontent.com/amazon-science/hallucination-benchmark-trivialplus/main/"
+                  "triviaplus_dataset.parquet")
+TRIVIAPLUS_SHA256 = "fecd7a981778f6c09b35eb493f3fe76cddff81e268ae4a90711e4f2298fc383d"   # file used for E4's rule
+
+
+def fetch_triviaplus():
+    """E4: TRIVIA+ into /tmp, which is NOT saved as output (CC BY-NC-ND 4.0: research use, no sharing)."""
+    import hashlib
+    import urllib.request
+    path = "/tmp/triviaplus/triviaplus_dataset.parquet"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        urllib.request.urlretrieve(TRIVIAPLUS_URL, path)
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if digest != TRIVIAPLUS_SHA256:
+        raise RuntimeError(f"TRIVIA+ parquet differs from the one E4 was designed on (sha256 {digest})")
+    os.environ["TRIVIAPLUS_PARQUET"] = path
+    print("TRIVIA+ parquet ready:", path, flush=True)
+
 # 3. Run (resumable within the session)
 flag = "--smoke" if MODE.endswith("smoke") else ""
 if MODE in ("smoke", "full"):
@@ -130,11 +154,13 @@ elif MODE in ("features-smoke", "features", "chunked-smoke", "chunked", "trunc-s
     sh(f"python scripts/run_features.py {flag} {extra} --canon_root {found[0]} --outroot {OUTROOT}/features",
        cwd=REPO_DIR)
 elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-smoke", "longfreq",
-              "longpass-smoke", "longpass", "placebo-smoke", "placebo"):
+              "longpass-smoke", "longpass", "placebo-smoke", "placebo", "triviaplus-smoke", "triviaplus"):
+    base = MODE.replace("-smoke", "")
     lds = {"techqa": "techqa", "expertqa": "expertqalong", "longfreq": "techqa expertqalong",
-           "longpass": "techqa expertqalong", "placebo": "techqa"}[MODE.replace("-smoke", "")]
-    feat_flags = {"longfreq": "--freq", "longpass": "--long", "placebo": "--placebo"}.get(
-        MODE.replace("-smoke", ""), "--chunked --redeep")
+           "longpass": "techqa expertqalong", "placebo": "techqa", "triviaplus": "triviapluslong"}[base]
+    feat_flags = {"longfreq": "--freq", "longpass": "--long", "placebo": "--placebo"}.get(base, "--chunked --redeep")
+    if base == "triviaplus":
+        fetch_triviaplus()
     import torch
     import yaml
     models = yaml.safe_load(open(f"{REPO_DIR}/configs/reproduce.yaml"))["models"]
@@ -143,12 +169,21 @@ elif MODE in ("techqa-smoke", "techqa", "expertqa-smoke", "expertqa", "longfreq-
     for i, m in enumerate(models):
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(i % max(torch.cuda.device_count(), 1)), PYTHONUNBUFFERED="1")
         cmd = f"python scripts/reproduce_gasp.py --models {m} --datasets {lds} {cap} --outroot {OUTROOT}/gasp_repro"
+        cmd += " --no_analysis" if base == "triviaplus" else ""
         print("$", cmd, f"(GPU {env['CUDA_VISIBLE_DEVICES']})", flush=True)
         procs.append(subprocess.Popen(cmd, shell=True, cwd=REPO_DIR, env=env))
     if any(p.wait() for p in procs):
         raise RuntimeError("a GASP run failed; see the log above")
+    if base == "triviaplus" and flag:          # E4 checks (a), (b), (d) on the 20-case GASP runs, before extraction
+        for m in models:
+            tag = f"{m.split('/')[-1]}_triviapluslong_K5"
+            sh(f"python -W ignore scripts/triviaplus_check.py --canon_dir {OUTROOT}/gasp_repro/canon_results/{tag} "
+               f"--model {m} --min_ctx_chars 9000 --out {OUTROOT}/features/{tag}/triviaplus_check.json", cwd=REPO_DIR)
     sh(f"python scripts/run_features.py {flag} {feat_flags} --datasets {lds} "
        f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
+    if base == "triviaplus":                   # E4 also runs the E1 long pass (L), next to B
+        sh(f"python scripts/run_features.py {flag} --long --datasets {lds} "
+           f"--canon_root {OUTROOT}/gasp_repro/canon_results --outroot {OUTROOT}/features", cwd=REPO_DIR)
 else:
     raise ValueError(f"unknown MODE {MODE!r}")
 
