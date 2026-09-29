@@ -300,7 +300,7 @@ def fig0_test(tdir):
     for tag, f_test, f_dev, key, label in (
             ("P5", "e2_test_look_P5.json", "e2/e2_dev.json", ("D2",), "B \u2212 placebo\nTechQA, truncated"),
             ("P6", "e3_test_look_P6.json", "e3/e3_dev.json", ("D3",), "B \u2212 window 1\nevidence displaced"),
-            ("P7", "e4_test_look_P7.json", "e4/e4_dev.json", ("D4",), "B \u2212 Lookback\nTRIVIA+-long, human labels"),
+            ("P7", "e4_test_look_P7.json", "e4/e4_dev.json", ("D4",), "B \u2212 Lookback\nTRIVIA+-long, truncated"),
             ("P8", "e5_test_look_P8.json", "e5/e5_dev.json", ("MiniCheck", "D"), "B \u2212 MiniCheck\nlong sets, truncated"),
             ("P8", "e5_test_look_P8.json", "e5/e5_dev.json", ("LettuceDetect", "D"),
              "B \u2212 LettuceDetect\nlong sets, truncated")):
@@ -309,7 +309,7 @@ def fig0_test(tdir):
             checks.append((f"{tag}  {label}", get(tdir / f_test), get(ROOT / "results" / f_dev)))
     lo = min(min(t["lo"], dv["lo"] if dv else 0) for _, t, dv in checks)
     hi = max(max(t["hi"], dv["hi"] if dv else 0) for _, t, dv in checks)
-    xmax = max(0.16, hi + 0.08)
+    xmax = max(0.16, hi + 0.02)
     for yi, (lab, t, dv) in enumerate(checks):
         y = len(checks) - 1 - yi
         color = "#009e73" if "B" in lab.split("\n")[0] else COL["Lookback (S3)"]
@@ -328,14 +328,15 @@ def fig0_test(tdir):
         else:
             verdict = "holds" if t["sig"] and t["mean"] > 0 else "does not hold"
         good = (t["sig"] and t["mean"] > 0) or verdict in ("matches (tie)", "tie")
-        b.text(xmax - 0.004, y, verdict, va="center", ha="right", fontsize=6.5, color="#006b4f" if good else "#a33")
+        b.text(1.02, y, verdict, va="center", ha="left", fontsize=6.5, color="#006b4f" if good else "#a33",
+               transform=b.get_yaxis_transform())                   # right of the panel, clear of every interval
     b.axvline(0, color="k", lw=0.6, ls=":")
     b.set_yticks(range(len(checks)), [c[0] for c in reversed(checks)], fontsize=6.5)
     b.set_xlim(min(-0.03, lo - 0.01), xmax)
     b.set_ylim(-0.6, len(checks) - 0.5)
     b.set_xlabel("AUC difference, 95% interval (filled: test, open: dev)")
     b.set_title("(b) Checks written before each test look")
-    fig.subplots_adjust(wspace=0.55)
+    fig.subplots_adjust(wspace=0.55, right=0.86)
     save(fig, "fig0_main_results_test")
 
 
