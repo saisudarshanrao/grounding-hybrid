@@ -13,14 +13,39 @@ A_ctx / (A_ctx + A_new) per window and keep the maximum over windows. A logistic
 (C tuned by grouped 5-fold CV on the dev split) gives the sentence score.
 
 **Compared under the same protocol.** Perplexity + length; GASP (its own classifier); Lookback Lens; ReDeEP
-(training-free and regression forms); frequency-aware attention (arXiv 2602.18145). Scorers: Qwen2.5-1.5B-Instruct
-and SmolLM2-1.7B-Instruct. Datasets: RAGTruth, TofuEval, RAGBench (GASP's samples), TechQA (600 cases) and
-ExpertQA-long (466 cases, contexts of at least 9000 characters) from RAGBench, and a controlled truncation study
-(512-token windows on RAGTruth and TofuEval, the full view as upper bound).
+(training-free and regression forms); frequency-aware attention (arXiv 2602.18145); one long pass over the whole
+context (baseline L); and two trained checkers used as released, MiniCheck-Flan-T5-Large and LettuceDetect-large.
+Scorers: Qwen2.5-1.5B-Instruct and SmolLM2-1.7B-Instruct. Datasets: RAGTruth, TofuEval, RAGBench (GASP's samples),
+TechQA (600 cases) and ExpertQA-long (466 cases, contexts of at least 9000 characters) from RAGBench, TRIVIA+-long
+(TRIVIA+ responses whose article has at least 9000 characters; human sentence labels), and a controlled truncation
+study (512-token windows on RAGTruth and TofuEval, the full view as upper bound).
 
 **Protocol.** Every design choice was made on GASP's dev split (grouped CV by source). The method, baselines,
 datasets and metrics were then frozen and every detector was scored once on GASP's test split
-(`scripts/test_look.py`). Differences use GASP's paired source-level bootstrap (2000 resamples).
+(`scripts/test_look.py`). Five experiments added after the freeze (E1-E5) each had a decision rule written before
+any code, a recorded dev decision and one test look. Differences use GASP's paired source-level bootstrap (2000
+resamples; pooled differences resample sources within each dataset with the same draw for both scorers).
+
+## Results (test split; each check written down before its single look)
+
+| Check | Test AUC difference [95% CI] | Verdict |
+|---|---|---|
+| P1 B - window 1, controlled 512-token truncation (RAGTruth, TofuEval) | +0.013 [-0.004, +0.033] | does not hold |
+| P2 B - Lookback, real truncation (TechQA, ExpertQA-long) | +0.043 [+0.023, +0.063] | holds |
+| P3 Lookback - GASP, five datasets | +0.088 [+0.070, +0.108] | holds |
+| P4 B - one long pass L (E1) | +0.007 [-0.008, +0.023] | tie |
+| P5 B - placebo windows from another document (E2, TechQA) | +0.077 [+0.049, +0.108] | holds |
+| P6 B - window 1 with the evidence displaced (E3, RAGTruth, RAGBench) | +0.077 [+0.058, +0.095] | holds |
+| P7 B - Lookback, TRIVIA+-long, human labels (E4) | -0.003 [-0.061, +0.052] | not shown (dev: -0.148, B loses) |
+| P8 B - MiniCheck, long-context sets (E5) | +0.048 [+0.008, +0.087] | B ahead (dev: tie) |
+| P8 B - LettuceDetect, long-context sets (E5) | +0.186 [+0.133, +0.239] | B ahead |
+
+In short: attention reading beats context removal on every dataset and scorer. Windowed reading (B) helps where
+retrieval pushes the evidence past the window (TechQA: AUC 0.673 -> 0.743 and 0.684 -> 0.776), a placebo removes
+that gain, and it recovers 98% of the loss when the evidence is moved out of window 1 on purpose. It gives no gain on
+ExpertQA-long and does not replicate on TRIVIA+-long, where the evidence probably sits in the first window. It ties
+with one long pass while keeping memory fixed, and on long contexts it beats LettuceDetect and, narrowly, MiniCheck
+(both used zero-shot; B is fit on each dataset's dev split).
 
 ## Structure
 
@@ -51,12 +76,22 @@ scripts/ -- pipeline
   placebo_check.py           checks for Bp: with the case as its own donor, Bp = B exactly; the donor rule holds
   extract_displaced.py       window 1 and B on the displaced contexts (RAGTruth, RAGBench; contexts that fit)
   displace_check.py          checks: window 1 holds no original text; empty prefix = original reading; donor rule
+  gasp_triviaplus.py         TRIVIA+ through GASP's own case builder (articles >= 9000 characters, human labels)
+  triviaplus_check.py        checks for TRIVIA+-long: label conversion, article length, one source per article;
+                             --cutoff derives the 9000-character cutoff from article lengths alone
+  score_checkers.py          MiniCheck + LettuceDetect scores, as released, for every GASP sentence (own environment;
+                             --shard / --merge for splitting a dataset over GPUs; row checks on every sentence)
+  checkers_check.py          checks: both checkers reproduce their README examples; finite scores; every
+                             LettuceDetect answer token maps to one GASP sentence
+  assemble_checkers.py       joins the checker shards from several Kaggle outputs and checks every row
 
 scripts/ -- the test look, figures, bookkeeping
   test_look.py               every frozen detector, fit on dev, scored once on test (--eval_on devhalf = dry run)
   make_figures.py            dev figures; --test draws the main figures from the test look's saved scores
   cost_table.py              seconds per case for every detector, from saved run timings
   provenance.py              which Kaggle run made each result file; row alignment and cross-run checks
+  paper_tables.py            appendix tables from the saved results (no refitting)
+  paper_latex_e4e5.py        LaTeX tables for E4 and E5 from the saved results
 
 scripts/ -- dev-only analyses (grouped CV on the dev split; never touch test)
   eval_features.py           Lookback vs GASP under GASP's split and classifier
@@ -74,6 +109,8 @@ scripts/ -- dev-only analyses (grouped CV on the dev split; never touch test)
   e1_long_pass.py            B vs one long single pass (baseline L) on the long sets (--eval_on dev; test once after)
   e2_placebo.py              B vs its placebo Bp on TechQA: does B's gain need the real context? (dev; test once after)
   e3_displace.py             B vs window 1 with the evidence moved out of window 1 (dev; test once after)
+  e4_triviaplus.py           B vs Lookback (and L, GASP, ReDeEP) on TRIVIA+-long (dev; test once after)
+  e5_checkers.py             B vs MiniCheck and LettuceDetect, long-context sets pooled (dev; test once after)
   mac_smoke_test.py          GASP on one toy example (Mac check)
 ```
 
@@ -100,10 +137,18 @@ The runner clones this repository, so every run uses exactly the pushed code.
 | `longpass` | baseline L (one long pass) on TechQA + ExpertQA-long; the smoke runs its checks first | - |
 | `placebo` | placebo reading Bp on TechQA (donor windows 2..K); the smoke runs its checks first | - |
 | `displace` | evidence displacement on RAGTruth + RAGBench (window 1 and B); the smoke runs its checks first | `full` output |
+| `triviaplus` | TRIVIA+-long: GASP (its analysis skipped), windowed Lookback + ReDeEP and baseline L; the smoke runs its checks first | - |
+| `checkers-smoke` | MiniCheck + LettuceDetect: their checks, then 20 cases per dataset | `full` output |
+| `checkers-a`, `checkers-b` | checker scores for all six datasets, split into shards over two versions run at the same time | `full` output |
+| `checkers:<plan>` | an explicit list of scoring jobs per T4, e.g. `checkers:techqa@0/8,expertqalong@1/8;techqa@4/8` | `full` output |
 
 "`full` output" = the `results/gasp_repro/canon_results` folder of a `full` run, attached to the notebook as input
 (for example as a private Kaggle dataset); the runner finds it automatically. GASP's sampling and scoring are
-deterministic: reruns give byte-identical `sentence.csv` files.
+deterministic: reruns give byte-identical `sentence.csv` files (the long-set modes rebuild their GASP runs this way).
+TRIVIA+ (CC BY-NC-ND 4.0) is downloaded at run time into the session's `/tmp` and checked against the sha256 the
+experiment was designed on; neither it nor anything derived from it is committed. The checker modes install their own
+package versions (ModernBERT needs transformers >= 4.48) after the GASP steps, which stay on the pinned versions;
+MiniCheck redoes a case with smaller batches of the same chunks if a batch runs out of GPU memory.
 
 Download each run's `results/` into this folder, then:
 
@@ -114,6 +159,14 @@ python -W ignore scripts/test_look.py --eval_on test       # the single test loo
 python -W ignore scripts/make_figures.py --test            # main figures from results/test/
 python -W ignore scripts/make_figures.py                   # dev diagnostics (layers, prior)
 python scripts/cost_table.py                               # compute cost per detector
+```
+
+Each post-freeze experiment (`scripts/e1_long_pass.py` ... `scripts/e5_checkers.py`) runs the same way: `--eval_on dev`
+for the decision, `--eval_on dryrun` as a code check on two halves of dev, then `--eval_on test` once. For E5, first
+join the checker shards from the downloaded Kaggle outputs:
+
+```bash
+python scripts/assemble_checkers.py path/to/output_1.zip path/to/output_2.zip ...
 ```
 
 ## Setup (Mac, for development and analysis)
@@ -131,6 +184,14 @@ python scripts/setup_gasp.py             # fetch GASP + TofuEval
 python scripts/mac_smoke_test.py         # toy example with Qwen2.5-0.5B
 ```
 
+The trained checkers need newer libraries than the pinned pipeline, so they get their own environment:
+
+```bash
+/opt/homebrew/bin/python3.11 -m venv .venv_checkers
+.venv_checkers/bin/pip install torch "transformers>=4.48.3,<5" "lettucedetect==0.2.3" accelerate sentencepiece \
+    "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@b58b9fa69acbd1015ec970fa65dd752413a053d2"
+```
+
 Quick feature check on a few cases (alignment must show `covered == gasp_rows`, log-prob difference ~0.001):
 
 ```bash
@@ -140,4 +201,7 @@ python scripts/extract_features.py --canon_dir results/gasp_repro/canon_results/
 
 ## Credits
 
-Builds on GASP (Bouke, 2026, arXiv:2607.04223, MIT license), fetched unmodified at a pinned commit.
+Builds on GASP (Bouke, 2026, arXiv:2607.04223, MIT license), fetched unmodified at a pinned commit. Uses TRIVIA+
+(amazon-science/hallucination-benchmark-trivialplus, CC BY-NC-ND 4.0; research use, not redistributed),
+MiniCheck (Liyan06/MiniCheck, pinned commit) and LettuceDetect (KRLabsOrg/LettuceDetect, version 0.2.3), all as
+released.
